@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}计划任务{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="section-title"><h1>计划任务</h1><a class="button" href="{{ url_for('schedule_new') }}">新增计划</a></div>
+  <table class="table">
+    <tr><th>名称</th><th>Cron</th><th>时区</th><th>状态</th><th>操作</th></tr>
+    {% for schedule in schedules %}
+      <tr><td>{{ schedule.name }}</td><td><code>{{ schedule.cron_expr }}</code></td><td>{{ schedule.timezone }}</td><td><span class="status-pill {{ 'status-enabled' if schedule.enabled else 'status-disabled' }}">{{ '启用' if schedule.enabled else '停用' }}</span></td><td><a href="{{ url_for('schedule_edit', schedule_id=schedule.id) }}">编辑</a></td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}
