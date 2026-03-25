@@ -1,0 +1,6 @@
+{
+  "include": ["news_admin/**/*.py"],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "extraPaths": ["vendor"]
+}
