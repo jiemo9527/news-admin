@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block title %}平台表单{% endblock %}
+{% block content %}
+<section class="panel form-panel">
+  <h1>{{ '编辑平台' if platform else '新增平台' }}</h1>
+  <form method="post" class="form-grid" id="platform-form">
+    <label>名称<input name="name" value="{{ platform.name if platform else '' }}" required /></label>
+    <label>类型
+      <select name="kind" id="platform-kind" required>
+        {% for option in [('telegram', 'Telegram'), ('wechat', '企业微信'), ('dingtalk', '钉钉'), ('feishu', '飞书'), ('email', '邮箱')] %}
+          <option value="{{ option[0] }}" {% if platform and platform.kind == option[0] %}selected{% endif %}>{{ option[1] }}</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <div class="span-2 platform-fields" data-platform-kind="telegram">
+      <div class="form-grid single-group-grid">
+        <label class="span-2">Telegram Bot Token<input name="bot_token" data-required value="{{ platform.config.bot_token if platform and platform.config else '' }}" /></label>
+      </div>
+    </div>
+
+    <div class="span-2 platform-fields" data-platform-kind="wechat">
+      <p class="field-note">企业微信机器人无需平台级凭证，具体 webhook 和 @对象在接收人里配置。</p>
+    </div>
+
+    <div class="span-2 platform-fields" data-platform-kind="dingtalk">
+      <p class="field-note">钉钉机器人通常只需要 Webhook。若机器人开启了加签，再填写 Secret；@手机号和 @用户ID 都是可选项，并且都在接收人里配置。</p>
+    </div>
+
+    <div class="span-2 platform-fields" data-platform-kind="feishu">
+      <p class="field-note">飞书机器人无需平台级凭证，具体 webhook 和签名密钥在接收人里配置。</p>
+    </div>
+
+    <div class="span-2 platform-fields" data-platform-kind="email">
+      <div class="form-grid single-group-grid">
+        <label>SMTP Host<input name="smtp_host" data-required value="{{ platform.config.smtp_host if platform and platform.config else '' }}" /></label>
+        <label>SMTP Port<input name="smtp_port" type="number" min="1" step="1" data-required value="{{ platform.config.smtp_port if platform and platform.config else 465 }}" /></label>
+        <label>用户名<input name="smtp_username" value="{{ platform.config.smtp_username if platform and platform.config else '' }}" /></label>
+        <label>发件邮箱<input name="from_email" data-required value="{{ platform.config.from_email if platform and platform.config else '' }}" /></label>
+        <label class="span-2">密码<input name="smtp_password" type="password" value="{{ platform.config.smtp_password if platform and platform.config else '' }}" /></label>
+        {% set email_security_mode = 'starttls' if platform and platform.config and platform.config.use_tls else 'ssl' %}
+        <div class="span-2">
+          <div>连接加密</div>
+          <label class="check"><input type="radio" name="security_mode" value="ssl" {% if email_security_mode == 'ssl' %}checked{% endif %}/> 使用 SSL（通常为 465）</label>
+          <label class="check"><input type="radio" name="security_mode" value="starttls" {% if email_security_mode == 'starttls' %}checked{% endif %}/> 使用 STARTTLS（通常为 587）</label>
+        </div>
+      </div>
+    </div>
+
+    <label class="check"><input type="checkbox" name="enabled" {% if not platform or platform.enabled %}checked{% endif %}/> 启用</label>
+    <div class="span-2 actions"><button class="button primary" type="submit">保存</button></div>
+  </form>
+</section>
+<script>
+(() => {
+  const kindSelect = document.getElementById('platform-kind');
+  const groups = Array.from(document.querySelectorAll('.platform-fields'));
+  const toggle = () => {
+    const kind = kindSelect.value;
+    for (const group of groups) {
+      const active = group.dataset.platformKind === kind;
+      group.hidden = !active;
+      for (const input of group.querySelectorAll('[data-required]')) {
+        input.required = active;
+      }
+    }
+  };
+  kindSelect.addEventListener('change', toggle);
+  toggle();
+})();
+</script>
+{% endblock %}
