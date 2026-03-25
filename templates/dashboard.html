@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block title %}控制台{% endblock %}
+{% block content %}
+<section class="hero panel anchor-target" id="dashboard-overview">
+  <div>
+    <div class="eyebrow">Portable News Orchestrator</div>
+    <h1>新闻聚合控制面板</h1>
+    <p>集中管理来源、计划任务、投递平台和接收人。系统会生成统一简报，再按平台 fan-out，避免每个用户看到不同版本。</p>
+  </div>
+  <div class="stats-grid">
+    <div class="stat"><span>来源</span><strong>{{ stats.sources }}</strong></div>
+    <div class="stat"><span>健康来源</span><strong>{{ stats.healthy_sources }}</strong></div>
+    <div class="stat"><span>平台</span><strong>{{ stats.platforms }}</strong></div>
+    <div class="stat"><span>接收人</span><strong>{{ stats.recipients }}</strong></div>
+    <div class="stat"><span>计划任务</span><strong>{{ stats.schedules }}</strong></div>
+    <div class="stat"><span>发布页</span><strong>{{ stats.publications }}</strong></div>
+  </div>
+</section>
+<nav class="page-section-nav" aria-label="页面导航">
+  <a class="page-section-link" href="#dashboard-overview">总览</a>
+  <a class="page-section-link" href="#dashboard-runs">最近运行</a>
+  <a class="page-section-link" href="#dashboard-publication">最新发布</a>
+</nav>
+<section class="panel anchor-target" id="dashboard-runs">
+  <details class="section-collapsible dashboard-collapse" open>
+    <summary class="section-summary">
+      <div class="section-title collapse-title"><h2>最近运行</h2><a href="{{ url_for('runs') }}">查看全部</a></div>
+    </summary>
+    <div class="table-wrap">
+      <table class="table">
+        <tr><th>ID</th><th>触发方式</th><th>状态</th><th>开始时间</th><th>详情</th></tr>
+        {% for run in runs %}
+          <tr><td>#{{ run.id }}</td><td>{{ run.trigger_kind }}</td><td><span class="status-pill status-{{ run.status|lower }}">{{ run.status }}</span></td><td>{{ run.started_at|datetime_display }}</td><td><a href="{{ url_for('run_detail', run_id=run.id) }}">查看</a></td></tr>
+        {% else %}
+          <tr><td colspan="5">暂无运行记录</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  </details>
+</section>
+<section class="panel anchor-target" id="dashboard-publication">
+  <div class="section-title"><h2>最新发布</h2>{% if latest %}<a href="{{ url_for('published_latest') }}" target="_blank">打开</a>{% endif %}</div>
+  {% if latest %}
+    <p>最新发布页 ID：#{{ latest.id }}，随机路径：<code>/published/{{ latest.token }}</code>，固定入口：<code>/published/latest</code></p>
+  {% else %}
+    <p>还没有发布页，先点“立即执行”跑一次。</p>
+  {% endif %}
+</section>
+{% endblock %}

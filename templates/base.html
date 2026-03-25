@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}News Admin{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v=static_version) }}" />
+  <script>
+  (() => {
+    const prefetched = new Set();
+    const prefetch = (href) => {
+      if (!href || prefetched.has(href)) return;
+      try {
+        const url = new URL(href, window.location.origin);
+        if (url.origin !== window.location.origin) return;
+        if (url.pathname.startsWith('/published/')) return;
+        const link = document.createElement('link');
+        link.rel = 'prefetch';
+        link.href = url.href;
+        document.head.appendChild(link);
+        prefetched.add(url.href);
+      } catch (_error) {
+        prefetched.add(String(href));
+      }
+    };
+    const markNavigating = () => document.body.classList.add('is-navigating');
+    document.addEventListener('DOMContentLoaded', () => {
+      for (const anchor of document.querySelectorAll('a[href]')) {
+        anchor.addEventListener('mouseenter', () => prefetch(anchor.href), { passive: true });
+        anchor.addEventListener('focus', () => prefetch(anchor.href), { passive: true });
+        anchor.addEventListener('touchstart', () => prefetch(anchor.href), { passive: true });
+        anchor.addEventListener('click', () => {
+          if (!anchor.target || anchor.target === '_self') markNavigating();
+        });
+      }
+      for (const form of document.querySelectorAll('form')) {
+        form.addEventListener('submit', markNavigating);
+      }
+    });
+  })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="{{ url_for('dashboard') }}">News Admin</a>
+      <nav class="nav">
+        <a href="{{ url_for('dashboard') }}">主页</a>
+        <a href="{{ url_for('sources') }}">来源</a>
+        <a href="{{ url_for('connections') }}">对接与接收</a>
+        <a href="{{ url_for('activity') }}">运行与发布</a>
+        <a href="{{ url_for('settings') }}">设置</a>
+      </nav>
+      {% if is_authenticated %}
+      <div class="topbar-actions">
+        <span class="topbar-user">管理员：{{ admin_username }}</span>
+        <form method="post" action="{{ url_for('logout') }}">
+          <button class="button" type="submit">退出</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+  </header>
+  <main class="wrap page">
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="flash-stack">
+          {% for message in messages %}
+            <div class="flash">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,89 @@
+{% extends 'base.html' %}
+{% block title %}设置{% endblock %}
+{% block content %}
+<nav class="page-section-nav" aria-label="页面导航">
+  <a class="page-section-link" href="#settings-maintenance">任务与维护</a>
+  <a class="page-section-link" href="#settings-password">管理员认证</a>
+  <a class="page-section-link" href="#settings-schedules">计划任务</a>
+</nav>
+<section class="panel anchor-target" id="settings-maintenance">
+  <div class="section-title"><h1>任务与维护</h1><span>所有执行与清理入口统一放在这里</span></div>
+  <div class="maintenance-grid">
+    <form method="post" action="{{ url_for('run_trigger') }}" class="maintenance-card">
+      <div>
+        <h2>立即执行</h2>
+        <p>手动提交一次后台抓取、聚合、发布和投递任务，页面不会阻塞等待。</p>
+      </div>
+      <button class="button primary large" type="submit" {% if run_busy %}disabled{% endif %}>{{ '后台执行中' if run_busy else '立即执行' }}</button>
+    </form>
+    <form method="post" action="{{ url_for('maintenance_cleanup') }}" class="maintenance-card">
+      <div>
+        <h2>立即清理</h2>
+        <p>按保留天数删除过旧运行产物、发布页、缩略图和导出文件。</p>
+      </div>
+      <div class="maintenance-inputs">
+        <label>保留天数<input type="number" name="days" min="0" step="1" value="7" /></label>
+        <button class="button large" type="submit" {% if cleanup_busy %}disabled{% endif %}>{{ '清理执行中' if cleanup_busy else '按所选天数立即清理' }}</button>
+      </div>
+    </form>
+    <form method="post" action="{{ url_for('settings_backup') }}" class="maintenance-card">
+      <div>
+        <h2>立即备份</h2>
+        <p>即时打包 `data/` 目录里的数据库、发布页、缩略图和产物文件，并直接下载 zip 到本地。</p>
+      </div>
+      <button class="button large" type="submit">立即备份</button>
+    </form>
+    <form method="post" action="{{ url_for('settings_import') }}" class="maintenance-card" enctype="multipart/form-data">
+      <div>
+        <h2>导入迁移包</h2>
+        <p>上传之前导出的备份 zip，恢复数据库、发布页、缩略图和配置，用于系统迁移。</p>
+      </div>
+      <div class="maintenance-inputs">
+        <label>备份文件<input type="file" name="backup_file" accept=".zip,application/zip" required /></label>
+        <button class="button large" type="submit">导入并恢复</button>
+      </div>
+    </form>
+  </div>
+</section>
+<section class="panel anchor-target" id="settings-password">
+  <div class="section-title"><h1>管理员认证</h1><span>后台使用会话登录保护，公开发布页不受影响</span></div>
+  {% if bootstrap_exists %}
+    <p class="field-note">当前仍在使用首次生成的管理员密码。建议先登录确认可用，再立刻修改为你自己的强密码。</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('settings_password') }}" class="form-grid">
+    <label>当前密码<input type="password" name="current_password" autocomplete="current-password" required /></label>
+    <label>新密码<input type="password" name="new_password" minlength="12" autocomplete="new-password" required /></label>
+    <label class="span-2">确认新密码<input type="password" name="confirm_password" minlength="12" autocomplete="new-password" required /></label>
+    <div class="span-2 actions"><button class="button" type="submit">更新管理员密码</button></div>
+  </form>
+</section>
+<section class="panel anchor-target" id="settings-schedules">
+  <div class="section-title"><h1>计划任务</h1><a class="button" href="{{ url_for('schedule_new') }}">新增计划</a></div>
+  <div class="table-wrap">
+    <table class="table">
+      <tr><th>名称</th><th>Cron</th><th>时区</th><th>状态</th><th>操作</th></tr>
+      {% for schedule in schedules %}
+        <tr>
+          <td>{{ schedule.name }}</td>
+          <td><code>{{ schedule.cron_expr }}</code></td>
+          <td>{{ schedule.timezone }}</td>
+          <td><span class="status-pill {{ 'status-enabled' if schedule.enabled else 'status-disabled' }}">{{ '启用' if schedule.enabled else '停用' }}</span></td>
+          <td>
+            <div class="row-actions">
+              <a href="{{ url_for('schedule_edit', schedule_id=schedule.id) }}">编辑</a>
+              <form method="post" action="{{ url_for('schedule_toggle', schedule_id=schedule.id) }}">
+                <button class="button button-ghost" type="submit">{{ '禁用' if schedule.enabled else '启用' }}</button>
+              </form>
+              <form method="post" action="{{ url_for('schedule_delete', schedule_id=schedule.id) }}" onsubmit="return confirm('确认删除这个计划任务吗？');">
+                <button class="button button-danger" type="submit">删除</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5">暂无计划任务</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</section>
+{% endblock %}
