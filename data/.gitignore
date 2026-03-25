@@ -1,0 +1,15 @@
+*
+!.gitignore
+!README.md
+!artifacts/
+!publications/
+!exports/
+!thumbnails/
+artifacts/*
+!artifacts/.gitkeep
+publications/*
+!publications/.gitkeep
+exports/*
+!exports/.gitkeep
+thumbnails/*
+!thumbnails/.gitkeep
