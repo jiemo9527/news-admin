@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}接收人管理{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="section-title"><h1>接收人管理</h1><a class="button" href="{{ url_for('recipient_new') }}">新增接收人</a></div>
+  <table class="table">
+    <tr><th>名称</th><th>平台</th><th>状态</th><th>目标</th><th>操作</th></tr>
+    {% for recipient in recipients %}
+      <tr><td>{{ recipient.name }}</td><td>{{ recipient.platform_name }} ({{ recipient.platform_kind }})</td><td><span class="status-pill {{ 'status-enabled' if recipient.enabled else 'status-disabled' }}">{{ '启用' if recipient.enabled else '停用' }}</span></td><td><code>{{ recipient.target_json }}</code></td><td><a href="{{ url_for('recipient_edit', recipient_id=recipient.id) }}">编辑</a></td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}
