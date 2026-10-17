@@ -573,14 +573,14 @@ def test_push_and_fetch_schedules_are_independent(tmp_path):
     assert str(scheduler.get_job('push_digest').trigger.timezone) == 'Asia/Shanghai'
 
 
-def test_maintenance_admin_only_and_requires_password_and_confirmation(tmp_path):
+def test_maintenance_admin_only_and_requires_password(tmp_path):
     rt, client = make_client(tmp_path)
     rid=seed_run(rt)
     viewer=make_viewer(client)
     assert viewer.get('/admin/data').status_code == 403
     assert viewer.get('/admin/data/export').status_code == 403
     assert client.get('/admin/data').status_code == 200
-    for data in ({'password': 'wrong', 'confirm': '清空数据'}, {'password': 'pw', 'confirm': 'wrong'}):
+    for data in ({'password': 'wrong'}, {}):
         client.post('/admin/data/clear', data=data)
         assert rt.store.get_run(rid) is not None
     backup = client.post('/admin/data/export', data={'password': 'pw'})

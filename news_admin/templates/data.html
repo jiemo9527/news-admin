@@ -14,10 +14,9 @@
 <section class="panel">
   <h2>从备份恢复</h2>
   <p>用 ZIP 中的数据覆盖当前数据和模型配置。会校验文件、数据库结构和管理员账号；恢复后需要使用备份中的账号重新登录。当前数据不会自动备份，请先自行导出。</p>
-  <form method="post" action="/admin/data/restore" enctype="multipart/form-data" class="form-stack" onsubmit="return confirm('确定覆盖当前数据？不会自动备份。')">
+  <form method="post" action="/admin/data/restore" enctype="multipart/form-data" class="form-stack">
     <label class="field"><span>备份 ZIP（最多 256 MB）</span><input type="file" name="file" accept=".zip,application/zip" required></label>
     <label class="field"><span>当前管理员密码</span><input type="password" name="password" autocomplete="current-password" required></label>
-    <label class="field"><span>输入「恢复数据」确认</span><input name="confirm" required autocomplete="off" placeholder="恢复数据"></label>
     <button class="btn btn-danger">校验并恢复</button>
   </form>
 </section>
@@ -25,9 +24,8 @@
   <h2 class="text-error">危险操作：清空数据</h2>
   <p><b>清除：</b>新闻、简报、运行记录、推送记录、访问记录、普通用户、缩略图和模型缓存。</p>
   <p><b>保留：</b>所有管理员账号及其密码、来源配置、推送渠道、模型密钥、抓取和推送计划、其他系统设置。不会生成自动备份。</p>
-  <form method="post" action="/admin/data/clear" class="form-stack" onsubmit="return confirm('确认清空新闻、记录及普通用户？管理员保留。此操作不可撤销，不会自动备份。')">
+  <form method="post" action="/admin/data/clear" class="form-stack">
     <label class="field"><span>当前管理员密码</span><input type="password" name="password" autocomplete="current-password" required></label>
-    <label class="field"><span>输入「清空数据」确认</span><input name="confirm" required autocomplete="off" placeholder="清空数据"></label>
     <button class="btn btn-danger">清空数据（管理员保留）</button>
   </form>
 </section>

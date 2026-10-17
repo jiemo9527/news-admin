@@ -11,7 +11,8 @@
     <a href="/admin/channels" {% if path.startswith('/admin/channels') %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 9.5 18 3l-6.5 16-2.3-6.9z"/></svg>推送渠道</a>
     {% if admin %}
-    <a href="/admin/data" {% if path.startswith('/admin/data') %}aria-current="page"{% endif %}>数据管理</a>
+    <a href="/admin/data" {% if path.startswith('/admin/data') %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="4" rx="6" ry="2.5"/><path d="M4 6v3c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5V6c-1.4 1.1-3.6 1.7-6 1.7S5.4 7.1 4 6Zm0 5v3c0 1.4 2.7 2.5 6 2.5s6-1.1 6-2.5v-3c-1.4 1.1-3.6 1.7-6 1.7S5.4 12.1 4 11Z"/></svg>数据管理</a>
     <a href="/admin/users" {% if path.startswith('/admin/users') %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm6 1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1 17c0-3 2.7-5 6-5s6 2 6 5H1Zm13 0c0-1.6-.6-3-1.7-4 .2 0 .5-.1.7-.1 2.8 0 5 1.8 5 4.1H14Z"/></svg>用户管理</a>
     {% endif %}

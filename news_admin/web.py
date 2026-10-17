@@ -376,15 +376,13 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     def data_page(request: Request):
         return page(request, 'data.html')
 
-    def confirm_data_action(request: Request, password: str, confirm: str, expected: str):
+    def verify_data_password(request: Request, password: str):
         if not verify_password(password, request.state.user['password_hash']):
             raise HTTPException(400, '当前管理员密码不正确')
-        if expected and confirm != expected:
-            raise HTTPException(400, f'请准确输入「{expected}」')
 
     @app.post('/admin/data/export')
     def download_backup(request: Request, password: str = Form(...)):
-        confirm_data_action(request, password, '', '')
+        verify_data_password(request, password)
         try:
             data = export_backup(rt)
         except RuntimeError as exc:
@@ -396,8 +394,8 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             'Cache-Control': 'no-store'})
 
     @app.post('/admin/data/restore')
-    async def upload_backup(request: Request, password: str = Form(...), confirm: str = Form(...), file: UploadFile = File(...)):
-        confirm_data_action(request, password, confirm, '恢复数据')
+    async def upload_backup(request: Request, password: str = Form(...), file: UploadFile = File(...)):
+        verify_data_password(request, password)
         payload = await file.read(MAX_ARCHIVE + 1)
         try:
             await run_in_threadpool(restore_backup, rt, payload)
@@ -410,8 +408,8 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         return RedirectResponse('/login', status_code=303)
 
     @app.post('/admin/data/clear')
-    def clear_saved_data(request: Request, password: str = Form(...), confirm: str = Form(...)):
-        confirm_data_action(request, password, confirm, '清空数据')
+    def clear_saved_data(request: Request, password: str = Form(...)):
+        verify_data_password(request, password)
         uid = request.state.user['id']
         try:
             clear_data(rt)
