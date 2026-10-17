@@ -9,6 +9,7 @@
     <form method="post" action="/admin/settings" class="form-stack">
       <fieldset class="field">
         <legend>每次运行抓取的时间范围</legend>
+        <p class="hint">7×24 小时选项自动低速：单线程、请求间隔 3–6 秒；403/429 停止该来源。仍按每源条数上限，不保证覆盖列表中未提供的历史数据。</p>
         {% for key, label in fetch_windows.items() %}
         <label class="radio"><input type="radio" name="fetch_window" value="{{ key }}" {% if key == fetch_window %}checked{% endif %}><span>{{ label }}</span></label>
         {% endfor %}

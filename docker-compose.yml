@@ -1,0 +1,26 @@
+services:
+  news-admin:
+    image: ${NEWS_IMAGE:-ghcr.io/jiemo9527/news-admin:latest}
+    container_name: news-admin
+    restart: unless-stopped
+    init: true
+    ports:
+      # 本机反向代理推荐127.0.0.1；需要公网直接访问时在 .env 中设置 NEWS_BIND=0.0.0.0
+      - "${NEWS_BIND:-127.0.0.1}:${NEWS_PORT:-5080}:5080"
+    environment:
+      TZ: Asia/Shanghai
+      NEWS_DATA_DIR: /app/data
+      NEWS_ENV_PATH: /app/data/config.env
+    volumes:
+      # 包括 SQLite、缩略图、后台可编辑模型配置 config.env。不要单文件挂载 .env（后台原子替换文件会失效）。
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 120s

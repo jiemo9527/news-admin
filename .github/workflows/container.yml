@@ -1,0 +1,81 @@
+name: Test and publish container
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.lock && pip install --no-deps -e . && pip install pytest respx
+      - run: python -m pytest tests
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build candidate
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: news-admin:smoke
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test fresh installation
+        shell: bash
+        run: |
+          docker run -d --name news-smoke -p 127.0.0.1:15080:5080 news-admin:smoke
+          for n in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:15080/healthz; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:15080/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:15080/)" = 303
+          docker exec news-smoke sh -c 'test ! -f /app/data/admin_password.txt'
+          docker exec news-smoke python -c "from pathlib import Path; assert Path('/app/news_admin/templates/login.html').is_file()"
+          # 初始密码必须输出日志，但不要将真实值回显到 CI 日志。
+          docker logs news-smoke 2>&1 | grep -q '初始化管理员'
+          docker rm -f -v news-smoke
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/jiemo9527/news-admin
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=ref,event=tag
+      - name: Publish GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

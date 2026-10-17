@@ -177,11 +177,13 @@ def test_settings_page_saves_fetch_window_and_retention(tmp_path):
     assert rt.store.get_setting('fetch_window') == '24h' and rt.store.get_setting('retention_days') == '30'
 
 
-def test_password_change_when_not_pinned_by_env(tmp_path):
+def test_password_change_when_not_pinned_by_env(tmp_path, caplog):
     settings = Settings(data_dir=tmp_path, secret_key='s', llm_api_key='k', env_path=tmp_path / '.env', _env_file=None)
     rt = build_runtime(settings)
     client = TestClient(create_app(rt, start_scheduler=False))
-    initial = (tmp_path / 'admin_password.txt').read_text(encoding='utf-8').strip()
+    import re
+    initial = re.search(r'初始密码：([^\s]+)', caplog.text).group(1)
+    assert not (tmp_path / 'admin_password.txt').exists()
     client.post('/login', data={'username': 'admin', 'password': initial})
     assert client.get('/admin').status_code == 200
     client.post('/admin/password', data={'current': 'wrong', 'new': 'n3w-Passw0rd', 'confirm': 'n3w-Passw0rd'})

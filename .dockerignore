@@ -1,0 +1,10 @@
+# 严格白名单：本地 agent.md、密钥、数据、日志、Git 历史均不进入构建上下文。
+**
+!Dockerfile
+!requirements.lock
+!pyproject.toml
+!README.md
+!news_admin/
+!news_admin/**
+**/__pycache__/
+**/*.pyc

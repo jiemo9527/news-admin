@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import re
 import secrets
 import threading
@@ -91,7 +92,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     if not secret:
         secret = secrets.token_urlsafe(32)
         rt.store.set_setting('secret_key', secret)
-    password_file = settings.data_dir / 'admin_password.txt'
+    password_file = settings.data_dir / 'admin_password.txt'  # 仅用于清理旧版本遗留文件，不再创建
     password_pinned = bool(settings.admin_password)
 
     def bootstrap_admin() -> None:
@@ -113,10 +114,11 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         else:
             initial = legacy_plain or secrets.token_urlsafe(12)
             rt.store.create_user(settings.admin_username, hash_password(initial), 'admin')
-            password_file.write_text(initial, encoding='utf-8')
+            logging.getLogger(__name__).warning('初始化管理员：%s  初始密码：%s  请登录后修改密码，此信息仅在首次初始化输出', settings.admin_username, initial)
         rt.store.set_setting('admin_password', '')
 
     bootstrap_admin()
+    password_file.unlink(missing_ok=True)
 
     scheduler = BackgroundScheduler(timezone=tz.TZ)
     rt.store.set_setting('push_cron', rt.store.get_setting('push_cron', '0 6,20 * * *'))

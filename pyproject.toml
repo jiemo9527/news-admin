@@ -17,6 +17,9 @@ dependencies = [
     "lxml>=5.0",
     "python-multipart>=0.0.9",
     "itsdangerous>=2.2",
+    "pillow>=10.4",
+    "tzdata>=2024.1",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -32,3 +35,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["news_admin*"]
+
+[tool.setuptools.package-data]
+news_admin = ["templates/*.html", "static/*.css", "static/*.js", "static/*.svg"]

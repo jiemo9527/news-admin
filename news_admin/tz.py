@@ -9,6 +9,7 @@ TZ = ZoneInfo('Asia/Shanghai')
 FETCH_WINDOWS = {
     'today_yesterday': '昨天 0 点至今（北京时间）',
     '24h': '最近 24 小时',
+    '7d': '7×24 小时内（低速模式）',
 }
 
 
@@ -42,6 +43,8 @@ def day_start(value: datetime | None = None, days_ago: int = 0) -> datetime:
 def fetch_since(window: str, value: datetime | None = None) -> datetime:
     """抓取时间窗起点：today_yesterday = 昨天 0 点；24h = 24 小时前。"""
     current = to_local(value or now())
+    if window == '7d':
+        return current - timedelta(hours=7 * 24)
     if window == '24h':
         return current - timedelta(hours=24)
     return day_start(current, days_ago=1)

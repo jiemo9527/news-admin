@@ -113,7 +113,7 @@ class Runtime:
 
     def _fetch(self, source):
         window = self.store.get_setting('fetch_window', self.settings.fetch_window)
-        return _module_fetch()(source, since=tz.fetch_since(window))
+        return _module_fetch()(source, since=tz.fetch_since(window), slow=True) if window == '7d' else _module_fetch()(source, since=tz.fetch_since(window))
 
     def fetch_preview(self, source):
         """后台「测试抓取」：按当前时间窗抓一次列表，不调用模型、不入库。"""

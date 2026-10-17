@@ -15,6 +15,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -290,9 +292,28 @@ def _fetch_page(client: httpx.Client, url: str) -> _Page:
     )
 
 
+class SourceRateLimited(RuntimeError):
+    pass
+
+
+class SlowRequests:
+    """一个来源单线程抓取；每个实际 HTTP 请求（含跳转）间隔 3-6 秒。"""
+    def __init__(self):
+        self.last_request = None
+
+    def before(self, request):
+        if self.last_request is not None:
+            time.sleep(random.uniform(3, 6))
+        self.last_request = time.monotonic()
+
+    def after(self, response):
+        if response.status_code in (403, 429):
+            raise SourceRateLimited(f'HTTP {response.status_code}：当前来源触发访问限制，本轮停止，不重试')
+
+
 def fetch_source(
     source: Source, now: datetime | None = None, since: datetime | None = None,
-    transport: httpx.BaseTransport | None = None,
+    transport: httpx.BaseTransport | None = None, slow: bool = False,
 ) -> FetchResult:
     """抓取一个来源。since 为时间窗起点（默认昨天 0 点，北京时间），更早的条目丢弃。"""
     now = tz.to_local(now) if now else tz.now()
@@ -303,10 +324,12 @@ def fetch_source(
         result.error = f'未知来源类型：{source.kind}'
         return result
     is_html = source.kind == 'html'
-    with httpx.Client(headers={'User-Agent': USER_AGENT}, timeout=20, follow_redirects=True, transport=transport) as client:
+    pace = SlowRequests()
+    hooks = {'request': [pace.before], 'response': [pace.after]} if slow else None
+    with httpx.Client(headers={'User-Agent': USER_AGENT}, timeout=20, follow_redirects=True, transport=transport, event_hooks=hooks) as client:
         try:
             listed = lister(client, source)
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError, SourceRateLimited) as exc:
             result.error = f'{type(exc).__name__}: {exc}'[:300]
             return result
 
@@ -344,8 +367,21 @@ def fetch_source(
                 source_weight=source.weight,
             )
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            result.articles = [a for a in pool.map(build, candidates) if a is not None][: source.max_items]
-    if not result.articles:
+        if slow:
+            # 串行执行且达到每源上限即停止，不提前并行打开剩余文章。
+            for entry in candidates:
+                try:
+                    article = build(entry)
+                except SourceRateLimited as exc:
+                    result.error = str(exc)
+                    break
+                if article is not None:
+                    result.articles.append(article)
+                if len(result.articles) >= source.max_items:
+                    break
+        else:
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                result.articles = [a for a in pool.map(build, candidates) if a is not None][: source.max_items]
+    if not result.articles and not result.error:
         result.error = '没有时间窗内的条目'
     return result

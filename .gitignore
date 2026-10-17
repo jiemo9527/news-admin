@@ -5,3 +5,11 @@ __pycache__/
 .env
 data/
 !eval/data/
+
+# local-only development handoff (never publish)
+agent.md
+AGENT.md
+agent.local.md
+*.egg-info/
+build/
+dist/
