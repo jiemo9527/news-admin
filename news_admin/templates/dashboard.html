@@ -16,7 +16,7 @@
     <span class="kpi-sub">{% if last %}#{{ last.id }} · 发布 {{ last.stats.get('events_published', 0) }} 条{% else %}尚未运行{% endif %}</span>
   </div>
   <div class="kpi">
-    <span class="kpi-label">定时任务</span>
+    <span class="kpi-label">抓取计划</span>
     <span class="kpi-value">{{ next_run if schedule_enabled and next_run else ('未启用' if not schedule_enabled else '—') }}</span>
     <span class="kpi-sub">{% if schedule_enabled %}下次运行 · <code>{{ schedule_cron }}</code>{% else %}可在下方开启{% endif %}</span>
   </div>
@@ -37,7 +37,7 @@
 
 <div class="grid-2">
   <section class="panel">
-    <h2>定时运行</h2>
+    <h2>定时抓取</h2>
     {% if admin %}
     <form method="post" action="/admin/schedule" class="form-inline">
       <label class="field grow"><span>Cron 表达式（北京时间）</span><input name="cron" value="{{ schedule_cron }}" placeholder="分 时 日 月 周" spellcheck="false"></label>
@@ -47,7 +47,19 @@
     {% else %}
     <p>{{ 'Cron ' ~ schedule_cron ~ '（已启用）' if schedule_enabled else '未启用' }}</p>
     {% endif %}
-    <p class="hint">例：<code>0 8,18 * * *</code> 每天 8:00、18:00；<code>0 */3 * * *</code> 每 3 小时。</p>
+    <p class="hint">例：<code>0 8,18 * * *</code> 每天 8:00、18:00；<code>0 */3 * * *</code> 每 3 小时。抓取只入库、生成简报，不会触发推送。</p>
+  </section>
+  <section class="panel">
+    <h2>简报推送（独立计划）</h2>
+    {% if admin %}
+    <form method="post" action="/admin/push-schedule" class="form-inline">
+      <label class="field grow"><span>Cron 表达式（北京时间）</span><input name="push_cron" value="{{ push_cron }}" required></label>
+      <label class="switch"><input type="checkbox" name="enabled" value="1" {% if push_enabled %}checked{% endif %}><span>启用</span></label>
+      <button class="btn">保存</button>
+    </form>
+    {% else %}<p>{{ push_cron }} · {{ '启用' if push_enabled else '停用' }}</p>{% endif %}
+    <p class="hint">默认 <code>0 6,20 * * *</code>，每天早 6 点、晚 8 点。汇总上次成功推送以来的新结果，按评分取前 {{ rt.settings.max_events }} 条；其余留在首页，不排队补发。失败不前移进度。</p>
+    {% if next_push %}<p class="hint">下次推送 {{ next_push }}</p>{% endif %}
   </section>
   <section class="panel">
     <h2>抓取范围</h2>

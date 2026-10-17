@@ -10,7 +10,7 @@
   </div>
   {% if admin %}<form method="post" action="/admin/briefs/{{ run.id }}/delete" onsubmit="return confirm('删除简报 #{{ run.id }}？其中的新闻也会从首页移除，不可恢复。')"><button class="btn btn-danger">删除本期</button></form>{% endif %}
 </section>
-<nav class="chips toc" aria-label="栏目">{% for section in sections %}<a class="chip" href="#s{{ loop.index }}">{{ section.title }}<span class="chip-count">{{ section.events | length }}</span></a>{% endfor %}</nav>
+<nav class="chips toc brief-nav" data-brief-nav aria-label="栏目">{% for section in sections %}<a class="chip" href="#s{{ loop.index }}">{{ section.title }}<span class="chip-count">{{ section.events | length }}</span></a>{% endfor %}</nav>
 {% for section in sections %}
 <section id="s{{ loop.index }}" class="brief-section">
   <h2 class="section-title">{{ section.title }}</h2>
@@ -69,4 +69,5 @@
   {% endfor %}
 </section>
 {% endfor %}
+<script src="/static/brief.js?v=1" defer></script>
 {% endblock %}

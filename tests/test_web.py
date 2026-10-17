@@ -554,3 +554,51 @@ def test_old_access_logs_are_cleaned_up(tmp_path):
         conn.execute("UPDATE access_log SET first_at=?, last_at=?", (_tz.iso(_tz.now() - timedelta(days=100)),) * 2)
     rt.cleanup()
     assert rt.store.list_access() == []
+
+
+
+def test_push_and_fetch_schedules_are_independent(tmp_path):
+    rt, client = make_client(tmp_path)
+    client.post('/admin/schedule', data={'cron': '2 */2 * * *', 'enabled': '1'})
+    assert rt.store.get_setting('schedule_cron') == '2 */2 * * *'
+    html = client.get('/admin').text
+    assert 'name="push_cron"' in html and '0 6,20 * * *' in html
+    client.post('/admin/push-schedule', data={'push_cron': '0 7,21 * * *', 'enabled': '1'})
+    assert rt.store.get_setting('push_cron') == '0 7,21 * * *'
+    assert rt.store.get_setting('schedule_cron') == '2 */2 * * *'
+    client.post('/admin/push-schedule', data={'push_cron': 'wrong', 'enabled': '1'})
+    assert rt.store.get_setting('push_cron') == '0 7,21 * * *'
+    scheduler = client.app.state.scheduler
+    assert str(scheduler.get_job('pipeline').trigger.timezone) == 'Asia/Shanghai'
+    assert str(scheduler.get_job('push_digest').trigger.timezone) == 'Asia/Shanghai'
+
+
+def test_maintenance_admin_only_and_requires_password_and_confirmation(tmp_path):
+    rt, client = make_client(tmp_path)
+    rid=seed_run(rt)
+    viewer=make_viewer(client)
+    assert viewer.get('/admin/data').status_code == 403
+    assert viewer.get('/admin/data/export').status_code == 403
+    assert client.get('/admin/data').status_code == 200
+    for data in ({'password': 'wrong', 'confirm': '清空数据'}, {'password': 'pw', 'confirm': 'wrong'}):
+        client.post('/admin/data/clear', data=data)
+        assert rt.store.get_run(rid) is not None
+    backup = client.post('/admin/data/export', data={'password': 'pw'})
+    assert backup.status_code == 200 and backup.headers['content-type'] == 'application/zip'
+    client.post('/admin/data/clear', data={'password': 'pw', 'confirm': '清空数据'})
+    assert rt.store.get_run(rid) is None
+    assert [u['username'] for u in rt.store.list_users()] == ['admin']
+    assert client.get('/admin', follow_redirects=False).status_code == 200
+    response = client.post('/admin/data/restore', data={'password': 'pw', 'confirm': '恢复数据'},
+                           files={'file': ('backup.zip', backup.content, 'application/zip')}, follow_redirects=False)
+    assert response.status_code == 303
+    assert rt.store.get_run(rid) is not None
+    assert 'reader' in [u['username'] for u in rt.store.list_users()]
+
+
+def test_brief_category_navigation_has_persistent_active_state(tmp_path):
+    rt, client = make_client(tmp_path)
+    rid=seed_run(rt)
+    html=client.get(f'/briefs/{rid}').text
+    assert 'brief-nav' in html and 'data-brief-nav' in html
+    assert '/static/brief.js' in html

@@ -420,3 +420,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
 
 .cred-panel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .cred { margin: 0; padding: 12px 14px; background: var(--surface-2); border-radius: var(--radius-sm); font: 600 16px/1.7 var(--mono); letter-spacing: .03em; user-select: all; white-space: pre-wrap; word-break: break-all; }
+
+.brief-nav { position: sticky; top: 56px; z-index: 15; padding: 10px 0; background: var(--bg); flex-wrap: nowrap; overflow-x: auto; margin: 0; border-bottom: 1px solid var(--line); }
+.brief-nav .chip[aria-current=location] { color: var(--accent-ink); border-color: var(--accent); background: var(--accent-soft); }
+@media(max-width:760px) { .brief-nav { margin: 0 -12px; padding: 10px 12px; top: 52px; } }

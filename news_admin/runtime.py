@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 
 from .analyze import analyze_articles, make_continuity_judge, make_judge
@@ -39,6 +40,7 @@ class Runtime:
     thumbnails: ThumbnailCache
     pipeline: Pipeline = field(init=False)
     transport: object | None = None  # 测试注入
+    operation_lock: object = field(default_factory=threading.RLock)
 
     def __post_init__(self) -> None:
         s = self.settings
@@ -137,6 +139,54 @@ class Runtime:
     def publication_url(self, run_id: int) -> str:
         base = self.settings.public_base_url.rstrip('/')
         return f'{base}/briefs/{run_id}' if base else ''
+
+    def collect(self, trigger: str = 'manual') -> int:
+        """抓取/分析/入库/生成简报，不推送。"""
+        with self.operation_lock:
+            run_id = self.pipeline.run(trigger)
+            self.cleanup()
+            return run_id
+
+    def deliver_digest(self) -> list[dict]:
+        """汇总自该渠道上次成功推送以来的所有批次，不只取最后一期。初次覆盖近24小时，最多50条。"""
+        from datetime import timedelta
+
+        with self.operation_lock:
+            until = tz.iso()
+            latest = self.store.latest_completed_run()
+            if latest is None:
+                return []
+            results = []
+            for channel in self.store.list_channels(enabled_only=True):
+                key = f"push_cursor_{channel['id']}"
+                since = self.store.get_setting(key, tz.iso(tz.now() - timedelta(hours=24)))
+                rows = self.store._rows(
+                    "SELECT e.run_id,e.payload_json,e.canonical_id FROM events e JOIN runs r ON r.id=e.run_id "
+                    "WHERE r.status='completed' AND r.finished_at>? AND r.finished_at<=? ORDER BY e.score DESC,e.run_id DESC",
+                    (since, until),
+                )
+                # latest version of each event; keep source run for delivery logs
+                chosen = {}
+                from .models import Event
+                for row in rows:
+                    previous = chosen.get(row['canonical_id'])
+                    if previous is None or row['run_id'] > previous['run_id']:
+                        chosen[row['canonical_id']] = row
+                events = [Event.model_validate_json(r['payload_json']) for r in chosen.values()]
+                events.sort(key=lambda e: e.score, reverse=True)
+                events = events[:self.max_events()]
+                if not events:
+                    continue
+                text = render_text(events, title='新闻简报 · ' + tz.now().strftime('%m-%d %H:%M'))
+                try:
+                    send(channel['kind'], channel['config'], text, subject='新闻简报 · ' + tz.now().strftime('%m-%d %H:%M'))
+                    self.store.record_delivery(latest['id'], channel['id'], 'sent')
+                    self.store.set_setting(key, until)
+                    results.append({'channel': channel['name'], 'status': 'sent'})
+                except Exception as exc:
+                    self.store.record_delivery(latest['id'], channel['id'], 'failed', str(exc)[:300])
+                    results.append({'channel': channel['name'], 'status': 'failed'})
+            return results
 
     def run_and_deliver(self, trigger: str = 'manual') -> int:
         run_id = self.pipeline.run(trigger)

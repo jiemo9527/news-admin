@@ -16,13 +16,15 @@ from urllib.parse import quote, urlencode
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from . import tz
+from .data_ops import export_backup, restore_backup, clear_data, MAX_ARCHIVE
 from .auth import ROLES, generate_password, generate_username, hash_password, validate_password, validate_username, verify_password
 from .config import Settings, update_env_file
 from .digest import article_times, build_sections, event_region_label
@@ -117,6 +119,8 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     bootstrap_admin()
 
     scheduler = BackgroundScheduler(timezone=tz.TZ)
+    rt.store.set_setting('push_cron', rt.store.get_setting('push_cron', '0 6,20 * * *'))
+    rt.store.set_setting('push_enabled', rt.store.get_setting('push_enabled', '1'))
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -128,6 +132,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             scheduler.shutdown(wait=False)
 
     app = FastAPI(title='News Admin', docs_url=None, redoc_url=None, lifespan=lifespan)
+    app.state.scheduler = scheduler
     templates = Jinja2Templates(directory=str(BASE / 'templates'))
     templates.env.globals.update(
         format_time=format_time, created_updated=created_updated, article_times=article_times, local_time=local_time, duration=duration,
@@ -145,7 +150,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
 
         def worker() -> None:
             try:
-                rt.run_and_deliver(trigger)
+                rt.collect(trigger)
             except PipelineBusy:
                 pass
             except Exception:  # 已在 runs 表中记录失败
@@ -155,15 +160,22 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         return True
 
     def sync_schedule() -> None:
-        cron = rt.store.get_setting('schedule_cron', '0 8,18 * * *')
+        cron = rt.store.get_setting('schedule_cron', '0 */2 * * *')
         enabled = rt.store.get_setting('schedule_enabled', '0') == '1'
         if scheduler.get_job('pipeline'):
             scheduler.remove_job('pipeline')
         if enabled:
-            scheduler.add_job(lambda: run_in_background('schedule'), CronTrigger.from_crontab(cron, timezone=tz.TZ), id='pipeline')
+            scheduler.add_job(lambda: run_in_background('schedule'), CronTrigger.from_crontab(cron, timezone=tz.TZ),
+                              id='pipeline', coalesce=True, max_instances=1, misfire_grace_time=3600)
+        if scheduler.get_job('push_digest'):
+            scheduler.remove_job('push_digest')
+        if rt.store.get_setting('push_enabled', '1') == '1':
+            scheduler.add_job(rt.deliver_digest,
+                CronTrigger.from_crontab(rt.store.get_setting('push_cron', '0 6,20 * * *'), timezone=tz.TZ),
+                id='push_digest', coalesce=True, max_instances=1, misfire_grace_time=3600)
 
-    def next_run_time() -> str:
-        job = scheduler.get_job('pipeline') if scheduler.running else None
+    def next_run_time(job_id='pipeline') -> str:
+        job = scheduler.get_job(job_id) if scheduler.running else None
         return job.next_run_time.astimezone(tz.TZ).strftime('%m-%d %H:%M') if job and job.next_run_time else ''
 
     def client_ip(request: Request) -> str:
@@ -207,7 +219,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         # 只读用户：所有写操作（POST）一律拒绝，修改自己的密码除外
         if request.method != 'GET' and user['role'] != 'admin' and path not in ('/logout', '/admin/password'):
             return Response('只读用户无权执行此操作', status_code=403, media_type='text/plain; charset=utf-8')
-        if path.startswith('/admin/users') and user['role'] != 'admin':
+        if (path.startswith('/admin/users') or path.startswith('/admin/data')) and user['role'] != 'admin':
             return Response('仅管理员可访问', status_code=403, media_type='text/plain; charset=utf-8')
         return await call_next(request)
 
@@ -320,8 +332,10 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         runs = rt.store.list_runs(30)
         return page(
             request, 'dashboard.html', runs=runs, busy=rt.pipeline.busy, next_run=next_run_time(),
-            schedule_cron=rt.store.get_setting('schedule_cron', '0 8,18 * * *'),
+            schedule_cron=rt.store.get_setting('schedule_cron', '0 */2 * * *'),
             schedule_enabled=rt.store.get_setting('schedule_enabled', '0') == '1',
+            push_cron=rt.store.get_setting('push_cron', '0 6,20 * * *'),
+            push_enabled=rt.store.get_setting('push_enabled', '1') == '1', next_push=next_run_time('push_digest'),
             sources=rt.store.list_sources(), health=rt.store.source_health(), channels=rt.store.list_channels(),
             fetch_window=rt.store.get_setting('fetch_window', settings.fetch_window),
         )
@@ -344,6 +358,70 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         sync_schedule()
         flash(request, '定时任务已保存', 'success')
         return RedirectResponse('/admin', status_code=303)
+
+    @app.post('/admin/push-schedule')
+    def save_push_schedule(request: Request, push_cron: str = Form(...), enabled: str = Form('0')):
+        try:
+            CronTrigger.from_crontab(push_cron, timezone=tz.TZ)
+        except ValueError as exc:
+            flash(request, f'推送 Cron 无效：{exc}', 'error')
+            return RedirectResponse('/admin', status_code=303)
+        rt.store.set_setting('push_cron', push_cron.strip())
+        rt.store.set_setting('push_enabled', '1' if enabled == '1' else '0')
+        sync_schedule()
+        flash(request, '推送计划已保存；不改变抓取计划', 'success')
+        return RedirectResponse('/admin', status_code=303)
+
+    @app.get('/admin/data', response_class=HTMLResponse)
+    def data_page(request: Request):
+        return page(request, 'data.html')
+
+    def confirm_data_action(request: Request, password: str, confirm: str, expected: str):
+        if not verify_password(password, request.state.user['password_hash']):
+            raise HTTPException(400, '当前管理员密码不正确')
+        if expected and confirm != expected:
+            raise HTTPException(400, f'请准确输入「{expected}」')
+
+    @app.post('/admin/data/export')
+    def download_backup(request: Request, password: str = Form(...)):
+        confirm_data_action(request, password, '', '')
+        try:
+            data = export_backup(rt)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return Response(data, media_type='application/zip', headers={
+            'Content-Disposition': 'attachment; filename="news-admin-' + tz.now().strftime('%Y%m%d-%H%M%S') + '.zip"',
+            'Cache-Control': 'no-store'})
+
+    @app.post('/admin/data/restore')
+    async def upload_backup(request: Request, password: str = Form(...), confirm: str = Form(...), file: UploadFile = File(...)):
+        confirm_data_action(request, password, confirm, '恢复数据')
+        payload = await file.read(MAX_ARCHIVE + 1)
+        try:
+            await run_in_threadpool(restore_backup, rt, payload)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        sync_schedule()
+        request.session.clear()
+        return RedirectResponse('/login', status_code=303)
+
+    @app.post('/admin/data/clear')
+    def clear_saved_data(request: Request, password: str = Form(...), confirm: str = Form(...)):
+        confirm_data_action(request, password, confirm, '清空数据')
+        uid = request.state.user['id']
+        try:
+            clear_data(rt)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc))
+        request.session.clear()
+        fresh = rt.store.get_user(uid)
+        request.session.update({'uid': uid, 'sv': fresh['session_version']})
+        flash(request, '新闻、简报、运行与访问记录、普通用户已清空；所有管理员和系统配置保留。', 'success')
+        return RedirectResponse('/admin/data', status_code=303)
 
     @app.get('/admin/runs/{run_id}', response_class=HTMLResponse)
     def run_detail(request: Request, run_id: int):
@@ -662,6 +740,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             flash(request, f"已删除用户「{target['username']}」", 'success')
         return RedirectResponse('/admin/users', status_code=303)
 
+    sync_schedule()
     return app
 
 
