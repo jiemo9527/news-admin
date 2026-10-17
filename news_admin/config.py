@@ -1,49 +1,50 @@
+"""配置：全部来自环境变量 / .env，敏感信息不入库、不入仓库。"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-import os
 from pathlib import Path
-import secrets
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / 'data'
-DB_PATH = DATA_DIR / 'news_admin.db'
-ARTIFACTS_DIR = DATA_DIR / 'artifacts'
-PUBLICATIONS_DIR = DATA_DIR / 'publications'
-EXPORTS_DIR = DATA_DIR / 'exports'
-THUMBNAILS_DIR = DATA_DIR / 'thumbnails'
-LOCK_PATH = DATA_DIR / 'run.lock'
-SECRET_KEY_PATH = DATA_DIR / 'secret_key.txt'
-TIMEZONE = 'Asia/Shanghai'
-RETENTION_DAYS = 7
-PUBLIC_WEB_BASE_URL = os.getenv('NEWS_ADMIN_PUBLIC_BASE_URL', '').strip().rstrip('/')
 
 
-def load_secret_key() -> str:
-    env_value = os.getenv('NEWS_ADMIN_SECRET_KEY', '').strip()
-    if env_value:
-        return env_value
-    SECRET_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if SECRET_KEY_PATH.exists():
-        value = SECRET_KEY_PATH.read_text(encoding='utf-8').strip()
-        if value:
-            return value
-    value = secrets.token_urlsafe(32)
-    SECRET_KEY_PATH.write_text(value, encoding='utf-8')
-    return value
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix='NEWS_', env_file=BASE_DIR / '.env', env_file_encoding='utf-8', extra='ignore')
+
+    data_dir: Path = BASE_DIR / 'data'
+    timezone: str = 'Asia/Shanghai'
+    public_base_url: str = ''
+
+    llm_base_url: str = 'https://api.openai.com/v1'
+    llm_api_key: str = ''
+    llm_model: str = 'gpt-5.6-luna'
+    llm_concurrency: int = 4
+
+    embedding_base_url: str = 'https://api.siliconflow.cn/v1'
+    embedding_api_key: str = ''
+    embedding_model: str = 'BAAI/bge-m3'
+
+    # 向量相似度阈值：≥high 直接合并；[low, high) 交给 LLM 判定；<low 不合并。
+    # 留空时按向量模型取默认值（bge-m3：0.86/0.72；无向量服务的字符哈希降级：0.75/0.40）。
+    cluster_high: float | None = None
+    cluster_low: float | None = None
+    cluster_window_hours: float = 48
+    min_topic_confidence: float = 0.5
+    max_events: int = 30
+
+    admin_username: str = 'admin'
+    admin_password: str = ''
+    secret_key: str = ''
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / 'news.db'
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.data_dir / 'cache'
 
 
-SECRET_KEY = load_secret_key()
-
-
-@dataclass(frozen=True)
-class Paths:
-    base_dir: Path = BASE_DIR
-    data_dir: Path = DATA_DIR
-    db_path: Path = DB_PATH
-    artifacts_dir: Path = ARTIFACTS_DIR
-    publications_dir: Path = PUBLICATIONS_DIR
-    exports_dir: Path = EXPORTS_DIR
-    thumbnails_dir: Path = THUMBNAILS_DIR
-    lock_path: Path = LOCK_PATH
-    secret_key_path: Path = SECRET_KEY_PATH
+def get_settings() -> Settings:
+    return Settings()

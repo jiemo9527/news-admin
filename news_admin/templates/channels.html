@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>推送渠道</h1>
+<table>
+  <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th></th></tr></thead>
+  {% for c in channels %}
+  <tr>
+    <td>{{ c.id }}</td><td>{{ c.name }}</td><td>{{ channel_kinds[c.kind].label }}</td><td>{{ '启用' if c.enabled else '停用' }}</td>
+    <td><form method="post" action="/admin/channels/{{ c.id }}/delete" class="inline" onsubmit="return confirm('删除渠道？')"><button class="link">删除</button></form></td>
+  </tr>
+  {% else %}<tr><td colspan="5">还没有渠道</td></tr>{% endfor %}
+</table>
+{% for kind, spec in channel_kinds.items() %}
+<details class="card">
+  <summary>新增 / 修改：{{ spec.label }}</summary>
+  <form method="post" action="/admin/channels" class="stack">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <label>ID（修改时填写；密钥类字段留空表示不修改）<input name="channel_id" type="number"></label>
+    <label>名称<input name="name" value="{{ spec.label }}"></label>
+    {% for field, label in spec.fields.items() %}
+    <label>{{ label }}{% if field in spec.required %} *{% endif %}<input name="{{ field }}" {% if field in ('password', 'secret', 'bot_token') %}type="password" autocomplete="new-password"{% endif %}></label>
+    {% endfor %}
+    <label><input type="checkbox" name="enabled" value="1" checked> 启用</label>
+    <button>保存</button>
+  </form>
+</details>
+{% endfor %}
+{% endblock %}

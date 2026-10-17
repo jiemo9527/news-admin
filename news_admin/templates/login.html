@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card narrow">
+  <h1>管理员登录</h1>
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>用户名<input name="username" value="admin" autocomplete="username"></label>
+    <label>密码<input name="password" type="password" autocomplete="current-password" autofocus></label>
+    <button>登录</button>
+  </form>
+  <p class="muted">未设置 NEWS_ADMIN_PASSWORD 时，首次启动生成的密码在 data/admin_password.txt。</p>
+</div>
+{% endblock %}

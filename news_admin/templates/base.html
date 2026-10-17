@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}News Admin{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">News Admin</a>
+  <nav>
+    {% if admin %}
+      <a href="/admin">运行</a>
+      <a href="/admin/sources">来源</a>
+      <a href="/admin/channels">推送</a>
+      <form method="post" action="/logout" class="inline"><button class="link">退出</button></form>
+    {% else %}
+      <a href="/login">管理</a>
+    {% endif %}
+  </nav>
+</header>
+{% set message = request.session.pop('flash', None) %}
+{% if message %}<div class="flash">{{ message }}</div>{% endif %}
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

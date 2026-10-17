@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>运行</h1>
+<div class="grid2">
+  <div class="card">
+    <h2>手动运行</h2>
+    <p>抓取 → 去重 → 分析 → 聚类 → 摘要 → 排序 → 推送。{% if busy %}<b>当前有任务在运行。</b>{% endif %}</p>
+    <form method="post" action="/admin/run"><button {% if busy %}disabled{% endif %}>立即运行</button></form>
+    {% if rt.embedding_degraded %}<p class="warn">未配置向量服务（NEWS_EMBEDDING_API_KEY），正在使用字符哈希向量，跨语言报道无法合并。</p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>定时</h2>
+    <form method="post" action="/admin/schedule" class="row">
+      <input name="cron" value="{{ schedule_cron }}" placeholder="分 时 日 月 周">
+      <label><input type="checkbox" name="enabled" value="1" {% if schedule_enabled %}checked{% endif %}> 启用</label>
+      <button>保存</button>
+    </form>
+    <p class="muted">时区 {{ rt.settings.timezone }}，例：<code>0 8,18 * * *</code></p>
+  </div>
+</div>
+<table>
+  <thead><tr><th>#</th><th>触发</th><th>状态</th><th>开始 (UTC)</th><th>文章</th><th>去重后</th><th>事件</th><th>降级摘要</th><th>Token</th><th></th></tr></thead>
+  <tbody>
+  {% for run in runs %}
+  {% set st = run.stats %}
+  {% set llm = st.get('llm', {}) %}
+  <tr>
+    <td>{{ run.id }}</td><td>{{ run.trigger }}</td><td class="status {{ run.status }}">{{ run.status }}</td>
+    <td>{{ run.started_at[:16].replace('T', ' ') }}</td>
+    <td>{{ st.get('articles_fetched', '-') }}</td><td>{{ st.get('articles_after_dedupe', '-') }}</td>
+    <td>{{ st.get('events_published', '-') }}</td><td>{{ st.get('summaries_degraded', '-') }}</td>
+    <td>{{ llm.values() | sum(attribute='prompt_tokens') + llm.values() | sum(attribute='completion_tokens') }}</td>
+    <td><a href="/admin/runs/{{ run.id }}">详情</a>{% if run.status == 'completed' %} · <a href="/briefs/{{ run.id }}">简报</a>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

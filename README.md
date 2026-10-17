@@ -1,214 +1,80 @@
 # News Admin
 
-一个可迁移的本地新闻聚合控制面板，用来抓取多家新闻源、自动聚合、生成 Web 发布页，并按接收人投递到 Telegram / 邮箱 / 企业微信 / 钉钉 / 飞书。
+多来源新闻 → 结构化分析 → 事件聚类 → 带引用的中文摘要 → 排序 → Web 简报 + 多渠道推送。
+
+大模型负责理解、归纳和判断；**它的每一个输出都经过 Schema 校验和事实校验**，不合格就带着错误重试，重试仍失败就降级，并在后台标记。
+
+```
+抓取 ─► 标准化 ─► 一级去重 ─► 逐篇分析(LLM) ─► 事件聚类(向量+LLM) ─► 跨批次比对 ─► 摘要(LLM)+事实校验 ─► 排序 ─► 发布/推送
+```
+
+设计原则、阈值和取舍见 [docs/DESIGN.md](docs/DESIGN.md)。
+
+## 各环节怎么做
+
+| 环节 | 做法 | 为什么 |
+|---|---|---|
+| 抓取 | 只接 RSS/Atom，正文用 trafilatura 通用抽取，失败退回 feed 摘要 | 旧版为每个站点手写选择器，维护成本高且经常失效 |
+| 一级去重 | 规范化 URL 精确去重 + 字符 3-gram 包含度 ≥0.8 判为通稿转载 | 不花模型钱；短文本上比 SimHash 稳定 |
+| 分类 | 地区（国内/港澳台/国际/全球）和主题（10 类）**两个独立维度**；置信度 <0.5 归「其他」 | 旧版把地区和主题混在一个字段，「中国芯片出口管制」只能二选一 |
+| 同一事件 | 用 LLM 归一化后的「中文标题+事件指纹+关键事实」做向量；≥高阈值直接合并，模糊区间交给 LLM 按「主体+行为+时间地点」判定，48 小时窗口 | 中英文报道原文的向量相距很远；判定标准写死，评论文章不与事实报道合并 |
+| 跨批次 | 与上一批已发布事件比对：无新来源 → 不再推送；有新来源 → 标「更新」 | 定时运行时不会反复推送同一条新闻 |
+| 摘要 | 每句必须带来源编号；句中数字必须能在**所引用的那篇来源**中找到；禁止套话；来源说法冲突时单独列出 | 让摘要可追溯，减少编造 |
+| 排序 | `影响力×2 + log2(1+来源数)×1.5 + 新鲜度 + 来源权重 − 评论类惩罚` | 可解释；来源数边际递减，避免转载多就排前面 |
+
+### 结构化输出
+
+- 所有模型输出由 Pydantic 定义（`news_admin/models.py`），自动转换为 OpenAI strict JSON Schema（内联 `$ref`、全部字段必填、禁止额外字段）
+- 网关不支持 `json_schema` 时自动降级为 `json_object` + 本地校验
+- 校验失败把 Pydantic 报错原文回传给模型重试，最多 2 次
+- 以「模型 + Prompt 版本 + 输入」为键缓存结果，改 Prompt 必须提升版本号（`news_admin/prompts.py`）
+- 每次调用记录阶段、Token、耗时、重试、是否命中缓存，后台按运行汇总
 
 ## 快速开始
 
-### 方式一：一键初始化（推荐）
-
 ```bash
-bash scripts/bootstrap_local.sh
+uv venv && uv pip install -e ".[dev]"
+cp .env.example .env        # 填写模型和向量服务
+python -m news_admin run --no-push   # 跑一次，不推送
+python -m news_admin show            # 终端查看最新简报
+python -m news_admin serve           # http://127.0.0.1:5080
 ```
 
-### 方式二：手动初始化
+`.env`：
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
-python run.py init-db
-python run.py serve --host 127.0.0.1 --port 5080
+```ini
+NEWS_LLM_BASE_URL=https://api.openai.com/v1   # 任意 OpenAI 兼容接口
+NEWS_LLM_API_KEY=
+NEWS_LLM_MODEL=gpt-5.6-luna
+NEWS_EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+NEWS_EMBEDDING_API_KEY=                       # 不填则降级为字符哈希向量
+NEWS_EMBEDDING_MODEL=BAAI/bge-m3
+NEWS_ADMIN_PASSWORD=                          # 不填则首次启动生成到 data/admin_password.txt
+NEWS_PUBLIC_BASE_URL=                         # 推送消息中的简报链接
 ```
 
-默认后台地址：
+## 后台
 
-- `http://127.0.0.1:5080`
-- 最新发布页：`http://127.0.0.1:5080/published/latest`
+- `/briefs/<id>`：公开简报，句末上标可跳到对应来源
+- `/admin`：手动运行、Cron 定时、每次运行的统计
+- `/admin/runs/<id>`：各阶段数量、模型调用与 Token、来源健康、推送结果、事件打分
+- `/admin/sources`：RSS 来源、权重、每次条数上限、连续失败次数
+- `/admin/channels`：Telegram / 钉钉 / 飞书 / 企业微信 / 邮件；编辑时密钥留空表示不修改
 
-## 功能
-
-- 管理 8 个预置新闻来源，可新增和修改来源规则
-- 管理推送平台：Telegram 已可用，钉钉/飞书已接入统一适配层
-- 管理多个接收人，可配置多个 Telegram `chat_id`
-- 手动执行聚合任务
-- 用 Cron 表达式配置定时任务
-- 生成统一发布页，并提供固定入口 `/published/latest`
-- 记录每次运行、每个来源命中情况、每条聚合结果和每次投递状态
-- 支持导出/导入 `data/`，便于迁移到新机器
-
-## 运行机制
-
-一次完整流程大致如下：
-
-1. 从预置来源抓取新闻列表和正文片段
-2. 清洗文本、去掉英文泄漏/低价值碎片/无意义标题
-3. 按主题聚合成 `story_groups`
-4. 渲染 Web 发布页
-5. 生成邮件/推送摘要并发送给已启用接收人
-6. 记录运行、来源命中、聚合结果和投递状态
-
-## 重要说明
-
-- 系统目标是“尽可能全面 + 不静默丢失 + 可见来源健康度”，不是虚假承诺全网 100% 完整抓取。
-- 对于动态站点、地区差异、反爬限制，系统会保留来源结果和错误信息，便于后续调优规则。
-
-## 目录
-
-- `news_admin/`：后端代码
-- `templates/`：管理后台模板
-- `static/`：样式资源
-- `data/`：SQLite 数据库、抓取 artifacts、发布页、导出包
-- `vendor/`：项目本地 Python 依赖
-
-## GitHub 发布说明
-
-- GitHub 仓库不包含真实运行数据、密钥、管理员引导文件、日志和导出包。
-- `data/` 目录只保留脱敏占位结构，首次启动后会自动重建实际运行文件。
-- 仓库中的 `.env.example` 只提供环境变量示例，不包含真实凭据。
-- 如果你不想使用本地 `vendor/` 依赖目录，可直接执行：
+## 评测
 
 ```bash
-python3 -m pip install -r requirements.txt
+python -m news_admin export-eval <run_id> --output eval/data/to_label.jsonl  # 导出待标注
+# 人工填写 gold_region / gold_topic / gold_event
+python -m news_admin eval --data eval/data/to_label.jsonl --output eval/report.json
 ```
 
-## 安装依赖
+输出地区/主题准确率与混淆、聚类成对 Precision/Recall/F1、摘要首轮通过事实校验的比例，以及 Token 用量。用来对比模型、Prompt 版本和聚类阈值。
 
-项目默认支持两种方式：
-
-1. 使用系统 Python 已安装依赖
-2. 使用项目内 `vendor/` 目录加载依赖
-
-如果需要重新安装到项目目录：
+## 开发
 
 ```bash
-python3 -m pip install --target ./vendor -r requirements.txt
+python -m pytest
 ```
 
-## 环境变量
-
-项目目前只依赖两个可选环境变量：
-
-- `NEWS_ADMIN_PUBLIC_BASE_URL`
-  - 用途：生成邮件/推送中的完整 Web 阅读链接
-  - 示例：`http://127.0.0.1:5080` 或 `https://your-domain.com`
-- `NEWS_ADMIN_SECRET_KEY`
-  - 用途：显式指定应用密钥
-  - 不设置时，会自动生成到 `data/secret_key.txt`
-- `NEWS_ADMIN_ADMIN_USERNAME`
-  - 用途：显式指定管理员用户名
-- `NEWS_ADMIN_ADMIN_PASSWORD`
-  - 用途：显式指定管理员明文密码（首次启动就可直接使用）
-- `NEWS_ADMIN_ADMIN_PASSWORD_HASH`
-  - 用途：如果你不想放明文密码，可直接提供密码哈希
-  - 与 `NEWS_ADMIN_ADMIN_PASSWORD` 二选一即可
-
-可参考仓库中的 `.env.example`。
-
-## 初始化
-
-```bash
-python3 run.py init-db
-```
-
-它会完成：
-
-- 创建 `data/` 目录结构
-- 初始化 SQLite 数据库
-- 写入预置新闻来源和推送平台骨架数据
-
-## 首次登录
-
-项目的管理员认证有两种来源：
-
-1. 你在环境变量里显式设置了管理员账号/密码
-2. 你没有设置，系统会在首次访问时自动生成：
-   - `data/admin_auth.json`
-   - `data/admin_bootstrap.txt`
-
-如果你没有在 `.env` 中设置管理员密码，那么首次登录密码可以从下面这个文件读取：
-
-```bash
-cat data/admin_bootstrap.txt
-```
-
-首次登录后，建议立即在后台修改密码。修改完成后，bootstrap 文件会被移除。
-
-## 启动控制面板
-
-```bash
-python3 run.py serve --host 127.0.0.1 --port 5080
-```
-
-如果你已经配置了 `NEWS_ADMIN_PUBLIC_BASE_URL`，推送中的 “前往Web阅读” 会自动变成完整 URL。
-
-## 手动执行一次
-
-```bash
-python3 run.py run-now
-```
-
-适合在配置完来源、平台和接收人之后做首次验证。
-
-## 导出迁移包
-
-```bash
-python3 run.py export --output ./data/exports/news-admin-export.zip
-```
-
-## 导入迁移包
-
-```bash
-python3 run.py import --input ./data/exports/news-admin-export.zip
-```
-
-## 已实现的迁移策略
-
-导出包包含整个 `data/` 目录：
-
-- `news_admin.db`
-- `artifacts/`
-- `publications/`
-- `exports/` 中除当前输出文件外的内容
-
-导入时会先把原有 `data/` 备份到 `data-backup-before-import/`，再解压导入。
-
-## 推送配置建议
-
-- Telegram：在平台里配置 bot token，在接收人里填 `chat_id`
-- 钉钉：在接收人里配置 webhook 和可选 secret
-- 飞书：在接收人里配置 webhook 和可选 secret
-- 邮箱：在平台里配置 SMTP 主机、端口、用户名、密码、发件人地址
-
-## 首次启动后的建议步骤
-
-1. 登录后台并检查默认来源是否需要启用/调整
-2. 配置至少一个推送平台
-3. 添加接收人并启用
-4. 手动执行一次 `run-now` 或在后台触发一次运行
-5. 确认 `/published/latest`、后台运行记录和推送内容都正常
-
-## 开发与排障
-
-常用命令：
-
-```bash
-python3 run.py init-db
-python3 run.py serve --host 127.0.0.1 --port 5080
-python3 run.py run-now
-python3 run.py cleanup --days 7
-python3 run.py export --output ./data/exports/news-admin-export.zip
-```
-
-排障时重点关注：
-
-- `data/live-server.log`
-- 后台中的 runs / publications / activity 页面
-- `data/README.md` 中说明的运行期文件
-
-## 后续增强方向
-
-- 更细的聚合打分
-- 来源健康告警
-- Web 端导出/导入按钮
-- 钉钉/飞书应用级消息推送
+外部依赖（抓取、模型、向量）全部可注入，测试不访问网络。

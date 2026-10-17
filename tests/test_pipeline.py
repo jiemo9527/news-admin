@@ -1,0 +1,107 @@
+from datetime import datetime, timezone
+
+from news_admin.fetch import FetchResult, Source
+from news_admin.models import Article, ArticleAnalysis, EventSummary
+from news_admin.pipeline import Pipeline, PipelineDeps
+from news_admin.store import Store
+
+NOW = datetime(2026, 10, 17, 12, tzinfo=timezone.utc)
+FED_BODY = '美联储周三宣布将基准利率下调25个基点，至4.00%至4.25%区间，这是自去年12月以来的首次降息。'
+
+
+def article(id, source, url, title, body):
+    return Article(id=id, source=source, url=url, title=title, body=body, published_at=NOW)
+
+
+ARTICLES = {
+    'A': [article('1', 'A', 'https://a/1', '美联储降息25个基点', FED_BODY)],
+    'B': [
+        article('2', 'B', 'https://b/1', '美联储宣布降息', FED_BODY.replace('周三', '17日') + '鲍威尔称后续取决于数据。'),
+        article('3', 'B', 'https://b/2', '日本发生6级地震', '日本东北部发生6.1级地震，暂无海啸预警。'),
+    ],
+    'C': [article('4', 'C', 'https://c/1', 'Fed cuts rates', 'The Fed cut rates by 25 basis points to 4.00%-4.25%.')],
+}
+
+VECTORS = {'美联储降息25个基点': [1, 0], '美联储宣布降息': [1, 0], 'Fed cuts rates': [0.8, 0.6], '日本发生6级地震': [0, 1]}
+
+
+def analysis(article):
+    quake = '地震' in article.title
+    return ArticleAnalysis(
+        title_zh=article.title, region='international', topic='environment' if quake else 'economy', topic_confidence=0.9,
+        is_opinion=False, entities=[], key_facts=['f'], event_fingerprint='x', impact=3 if quake else 5, impact_reason='r',
+    )
+
+
+def summarize(articles, title, analysis=None):
+    return EventSummary.model_validate({'headline': title, 'sentences': [{'text': articles[0].body[:40], 'sources': [1]}]}), False
+
+
+def make_pipeline(tmp_path, judge_answer=True, fetched=None):
+    store = Store(tmp_path / 'n.db')
+    store.seed_sources([{'name': n, 'feed_url': f'https://{n}/rss'} for n in 'ABC'])
+    fetched = fetched or ARTICLES
+    deps = PipelineDeps(
+        fetch=lambda source: FetchResult(source=source, articles=fetched.get(source.name, [])),
+        analyze=lambda arts: {a.id: analysis(a) for a in arts},
+        embed=lambda texts: [VECTORS[t.split('\n')[0]] for t in texts],
+        judge_factory=lambda analyses: (lambda x, y: judge_answer),
+        summarize=summarize,
+        llm_calls=lambda: [],
+        now=lambda: NOW,
+    )
+    return store, Pipeline(store, deps)
+
+
+def test_pipeline_dedupes_clusters_ranks_and_persists(tmp_path):
+    store, pipeline = make_pipeline(tmp_path)
+    run_id = pipeline.run('manual')
+    run = store.get_run(run_id)
+    assert run['status'] == 'completed'
+    assert run['stats']['articles_fetched'] == 4
+    assert run['stats']['articles_after_dedupe'] == 3
+    events = store.load_events(run_id)
+    assert [e.summary.headline for e in events] == ['美联储宣布降息', '日本发生6级地震']
+    fed = events[0]
+    assert set(fed.sources) == {'A', 'B', 'C'}
+    assert fed.score > events[1].score
+
+
+def test_gray_zone_rejection_keeps_events_separate(tmp_path):
+    store, pipeline = make_pipeline(tmp_path, judge_answer=False)
+    events = store.load_events(pipeline.run('manual'))
+    assert len(events) == 3
+
+
+def test_second_run_drops_unchanged_events_and_marks_updates(tmp_path):
+    store, pipeline = make_pipeline(tmp_path)
+    pipeline.run('manual')
+    second = dict(ARTICLES)
+    second['D'] = [article('5', 'D', 'https://d/1', '美联储宣布降息', '美联储降息后，美股三大指数收涨。')]
+    store.seed_sources([{'name': 'D', 'feed_url': 'https://D/rss'}])
+    VECTORS['美联储宣布降息'] = [1, 0]
+    pipeline.deps.fetch = lambda source: FetchResult(source=source, articles=second.get(source.name, []))
+    run_id = pipeline.run('manual')
+    events = store.load_events(run_id)
+    assert len(events) == 1
+    assert events[0].is_update is True
+    assert store.get_run(run_id)['stats']['events_unchanged'] == 1
+
+
+def test_failing_source_is_recorded_and_run_still_completes(tmp_path):
+    store, pipeline = make_pipeline(tmp_path)
+    original = pipeline.deps.fetch
+    pipeline.deps.fetch = lambda s: FetchResult(source=s, error='boom') if s.name == 'C' else original(s)
+    run_id = pipeline.run('manual')
+    assert store.get_run(run_id)['status'] == 'completed'
+    health = {s.name: store.source_health()[s.id] for s in store.list_sources()}
+    assert health['C']['consecutive_failures'] == 1 and health['C']['last_error'] == 'boom'
+
+
+def test_clustering_embeds_normalized_analysis_text_not_raw_text(tmp_path):
+    from news_admin.pipeline import analysis_embedding_text
+
+    a = ARTICLES['C'][0]
+    text = analysis_embedding_text(a, analysis(a))
+    assert text.startswith('Fed cuts rates') and 'x' in text
+    assert analysis_embedding_text(a, None).startswith('Fed cuts rates\nThe Fed')

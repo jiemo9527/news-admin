@@ -1,0 +1,37 @@
+{% extends 'base.html' %}
+{% block title %}新闻简报 #{{ run.id }}{% endblock %}
+{% block content %}
+<h1>新闻简报 <small>#{{ run.id }} · {{ run.finished_at[:16].replace('T', ' ') }} UTC</small></h1>
+<nav class="toc">{% for section in sections %}<a href="#s{{ loop.index }}">{{ section.title }}</a>{% endfor %}</nav>
+{% for section in sections %}
+<section id="s{{ loop.index }}">
+  <h2>{{ section.title }}</h2>
+  {% for event in section.events %}
+  {% set s = event.summary %}
+  <article class="event">
+    <h3>
+      {% if event.is_update %}<span class="tag update">更新</span>{% endif %}
+      {{ s.headline if s else event.lead.title }}
+    </h3>
+    <div class="meta">
+      {% if event.lead_analysis %}<span class="tag">{{ region_label(event) }}</span><span class="tag">{{ topic_labels[event.lead_analysis.topic] }}</span>{% endif %}
+      <span>{{ event.sources | length }} 个来源</span>
+      {% if event.summary_degraded %}<span class="tag warn" title="模型摘要未通过事实校验，已降级为来源原文导语">原文导语</span>{% endif %}
+    </div>
+    {% if s %}
+    <p class="summary">
+      {% for sentence in s.sentences %}{{ sentence.text }}{% for n in sentence.sources %}<sup><a href="#{{ event.id }}-{{ n }}">[{{ n }}]</a></sup>{% endfor %}{% endfor %}
+    </p>
+    {% for conflict in s.conflicts %}<p class="conflict">说法不一：{{ conflict }}</p>{% endfor %}
+    {% endif %}
+    <ol class="refs">
+      {% for article in event.articles %}
+      <li id="{{ event.id }}-{{ loop.index }}"><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.source }}｜{{ article.title }}</a>
+        {% if article.duplicate_sources %}<span class="dup">（另有 {{ article.duplicate_sources | join('、') }} 转载）</span>{% endif %}</li>
+      {% endfor %}
+    </ol>
+  </article>
+  {% endfor %}
+</section>
+{% endfor %}
+{% endblock %}
