@@ -13,10 +13,10 @@ WORKDIR /app
 
 COPY requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock \
-    && groupadd --gid 10001 news \
-    && useradd --uid 10001 --gid news --no-create-home news \
+    && groupadd --gid 10001 newsapp \
+    && useradd --uid 10001 --gid newsapp --no-create-home newsapp \
     && mkdir -p /app/data \
-    && chown news:news /app/data
+    && chown newsapp:newsapp /app/data
 COPY pyproject.toml README.md ./
 COPY news_admin ./news_admin
 RUN pip install --no-cache-dir --no-deps .
