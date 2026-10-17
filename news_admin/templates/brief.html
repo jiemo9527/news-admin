@@ -8,6 +8,7 @@
     <h1>新闻简报 #{{ run.id }}</h1>
     <p class="muted">生成于 {{ local_time(run.finished_at) }}</p>
   </div>
+  {% if admin %}<form method="post" action="/admin/briefs/{{ run.id }}/delete" onsubmit="return confirm('删除简报 #{{ run.id }}？其中的新闻也会从首页移除，不可恢复。')"><button class="btn btn-danger">删除本期</button></form>{% endif %}
 </section>
 <nav class="chips toc" aria-label="栏目">{% for section in sections %}<a class="chip" href="#s{{ loop.index }}">{{ section.title }}<span class="chip-count">{{ section.events | length }}</span></a>{% endfor %}</nav>
 {% for section in sections %}
@@ -35,11 +36,12 @@
         {{ event_times(event) }}
         <span>{{ event.sources | length }} 个来源</span>
       </div>
-      {% if event.previous %}
+      {% set context = event.previous | selectattr('relation', 'equalto', 'follow_up') | list %}
+      {% if context %}
       <div class="previous">
-        <span class="label">{{ '此前报道' if event.previous[0].relation == 'update' else '前情' }}</span>
+        <span class="label">前情</span>
         <ul>
-        {% for ref in event.previous %}
+        {% for ref in context %}
           <li><a href="/briefs/{{ ref.run_id }}#e-{{ ref.event_id }}">{{ ref.headline }}</a> <span class="muted">{{ format_time(ref.published_at, ref.time_precision) }}</span></li>
         {% endfor %}
         </ul>
@@ -55,7 +57,8 @@
       <ol class="refs">
         {% for article in event.articles %}
         {% set ac, au = article_times(article) %}
-        <li id="{{ event.id }}-{{ loop.index }}"><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.source }}｜{{ article.title }}</a>
+        {% set an = event.analyses.get(article.id) %}
+        <li id="{{ event.id }}-{{ loop.index }}"><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer" {% if an and an.title_zh != article.title %}title="原题：{{ article.title }}"{% endif %}>{{ article.source }}｜{{ an.title_zh if an else article.title }}</a>
           <span class="muted">创建 {{ ac }}{% if au %} · 更新 {{ au }}{% endif %}</span>
           {% if article.duplicate_sources %}<span class="dup muted">（另有 {{ article.duplicate_sources | join('、') }} 转载）</span>{% endif %}</li>
         {% endfor %}

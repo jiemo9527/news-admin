@@ -27,12 +27,14 @@ from .pipeline import PipelineBusy
 from .push import CHANNEL_KINDS
 from .rank import GRADE_LABELS, rate_event
 from .runtime import Runtime, build_runtime
+from .sources import EXTRA_SOURCES, ORIGINAL_SOURCES
 from .store import FEED_RANGES, FEED_SORTS
 from .timefmt import created_updated, format_time
 
 BASE = Path(__file__).resolve().parent
 PUBLIC_PREFIXES = ('/briefs', '/static', '/login', '/healthz', '/thumb/', '/favicon.ico')
 PER_PAGE = 20
+REPO_URL = 'https://github.com/jiemo9527/news-admin'
 MIN_PASSWORD = 8
 
 
@@ -101,7 +103,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         format_time=format_time, created_updated=created_updated, article_times=article_times, local_time=local_time, duration=duration,
         source_kinds=SOURCE_KINDS, topic_labels=TOPIC_LABELS, region_labels=REGION_LABELS, region_label=event_region_label,
         content_type_labels=CONTENT_TYPE_LABELS, channel_kinds=CHANNEL_KINDS, grade_labels=GRADE_LABELS,
-        feed_ranges=FEED_RANGES, feed_sorts=FEED_SORTS, fetch_windows=tz.FETCH_WINDOWS,
+        feed_ranges=FEED_RANGES, feed_sorts=FEED_SORTS, fetch_windows=tz.FETCH_WINDOWS, repo_url=REPO_URL,
     )
     templates.env.filters['highlight'] = highlight
     app.mount('/static', StaticFiles(directory=str(BASE / 'static')), name='static')
@@ -276,9 +278,43 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         flash(request, '；'.join(f"{r['channel']}：{'成功' if r['status'] == 'sent' else '失败'}" for r in results) or '没有启用的推送渠道')
         return RedirectResponse(f'/admin/runs/{run_id}', status_code=303)
 
+    presets = {p['feed_url']: p for p in [*ORIGINAL_SOURCES, *EXTRA_SOURCES]}
+
     @app.get('/admin/sources', response_class=HTMLResponse)
-    def sources(request: Request):
-        return page(request, 'sources.html', sources=rt.store.list_sources(), health=rt.store.source_health())
+    def sources(request: Request, edit: int | None = None):
+        current = sorted(rt.store.list_sources(), key=lambda s: (not s.enabled, s.id))
+        active = {s.feed_url for s in current if s.enabled}
+        added = {s.feed_url for s in current}
+        editing = next((s for s in current if s.id == edit), None)
+        return page(
+            request, 'sources.html', sources=current, health=rt.store.source_health(), editing=editing,
+            presets=[{**p, 'added': p['feed_url'] in added} for p in presets.values() if p['feed_url'] not in active],
+            test_result=request.session.pop('source_test', None),
+        )
+
+    @app.post('/admin/sources/preset')
+    def add_preset(request: Request, feed_url: str = Form(...)):
+        preset = presets.get(feed_url)
+        if preset is None:
+            flash(request, '未知的推荐来源', 'error')
+        else:
+            rt.store.add_preset_source(preset)
+            flash(request, f"已启用「{preset['name']}」，下次运行生效", 'success')
+        return RedirectResponse('/admin/sources', status_code=303)
+
+    @app.post('/admin/sources/{source_id}/test')
+    def test_source(request: Request, source_id: int):
+        source = next((s for s in rt.store.list_sources() if s.id == source_id), None)
+        if source is None:
+            raise HTTPException(404)
+        import dataclasses
+
+        result = rt.fetch_preview(dataclasses.replace(source, fetch_body=False))
+        request.session['source_test'] = {
+            'name': source.name, 'count': len(result.articles), 'error': result.error,
+            'items': [{'title': a.title, 'url': a.url, 'time': format_time(a.published_at, a.time_precision)} for a in result.articles[:8]],
+        }
+        return RedirectResponse('/admin/sources#test', status_code=303)
 
     @app.post('/admin/sources')
     def save_source(
@@ -312,6 +348,15 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     def delete_source(source_id: int):
         rt.store.delete_source(source_id)
         return RedirectResponse('/admin/sources', status_code=303)
+
+    @app.post('/admin/briefs/{run_id}/delete')
+    def delete_brief(request: Request, run_id: int):
+        if rt.pipeline.busy and (rt.store.get_run(run_id) or {}).get('status') == 'running':
+            flash(request, '运行中的任务不能删除', 'error')
+        elif rt.store.delete_run(run_id):
+            flash(request, f'已删除简报 #{run_id}', 'success')
+        target = request.headers.get('referer', '/briefs')
+        return RedirectResponse('/briefs' if f'/briefs/{run_id}' in target or '/admin/runs/' in target else target, status_code=303)
 
     @app.get('/admin/channels', response_class=HTMLResponse)
     def channels(request: Request):

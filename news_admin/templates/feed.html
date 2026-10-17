@@ -6,7 +6,7 @@
   <div>
     <h1>新闻汇总</h1>
     <p class="muted">
-      {% if latest %}最近更新 {{ local_time(latest.finished_at, '%m-%d %H:%M') }} · {% endif %}保留近 {{ retention_days }} 天 · 同一事件只显示最新版本
+      {% if latest %}最近更新 {{ local_time(latest.finished_at, '%m-%d %H:%M') }}{% endif %}
     </p>
   </div>
 </section>

@@ -60,6 +60,10 @@ class Runtime:
         window = self.store.get_setting('fetch_window', self.settings.fetch_window)
         return _module_fetch()(source, since=tz.fetch_since(window))
 
+    def fetch_preview(self, source):
+        """后台「测试抓取」：按当前时间窗抓一次列表，不调用模型、不入库。"""
+        return self._fetch(source)
+
     def cleanup(self) -> dict:
         days = int(self.store.get_setting('retention_days', str(self.settings.retention_days)))
         return {'runs': self.store.cleanup(days), 'thumbnails': self.thumbnails.prune(days)}

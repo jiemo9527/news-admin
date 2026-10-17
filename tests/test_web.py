@@ -204,3 +204,99 @@ def test_password_pinned_by_env_cannot_be_changed_in_ui(tmp_path):
     client.post('/logout')
     client.post('/login', data={'username': 'admin', 'password': 'pw'})
     assert client.get('/admin', follow_redirects=False).status_code == 200
+
+
+
+def login(client):
+    client.post('/login', data={'username': 'admin', 'password': 'pw'})
+
+
+def test_footer_has_github_link_and_feed_header_sentence_is_gone(tmp_path):
+    rt, client = make_client(tmp_path)
+    seed_run(rt)
+    html = client.get('/').text
+    assert 'href="https://github.com/jiemo9527/news-admin"' in html
+    assert '同一事件只显示最新版本' not in html and '保留近' not in html
+
+
+def test_admin_can_delete_a_brief_but_anonymous_cannot(tmp_path):
+    rt, client = make_client(tmp_path)
+    run_id = seed_run(rt)
+    client.post(f'/admin/briefs/{run_id}/delete')
+    assert rt.store.get_run(run_id) is not None
+    login(client)
+    assert '删除' in client.get('/briefs').text
+    client.post(f'/admin/briefs/{run_id}/delete')
+    assert rt.store.get_run(run_id) is None
+    assert client.get(f'/briefs/{run_id}').status_code == 404
+    assert '美联储降息25个基点' not in client.get('/').text
+
+
+def test_update_does_not_show_previous_block_but_follow_up_shows_context(tmp_path):
+    from news_admin.models import EventRef
+    rt, client = make_client(tmp_path)
+    run_id = rt.store.start_run('test')
+
+    def make(eid, url, headline, relation):
+        a = Article(id=eid, source='BBC', url=url, title='t', published_at=datetime.now(timezone.utc), time_precision='exact')
+        an = ArticleAnalysis(title_zh=headline, region='international', topic='society', topic_confidence=0.9, content_type='news',
+                             has_new_development=True, entities=[], key_facts=['f'], event_fingerprint='x', impact=3, impact_reason='r')
+        ref = EventRef(run_id=1, event_id='old', headline=f'旧报道{eid}', relation=relation)
+        return Event(id=eid, articles=[a], analyses={eid: an}, is_update=relation == 'update', previous=[ref],
+                     summary=EventSummary.model_validate({'headline': headline, 'sentences': [{'text': headline + '。', 'sources': [1]}]}))
+
+    rt.store.save_events(run_id, [make('u', 'https://x/u', '墨西哥三人获刑', 'update'), make('f', 'https://x/f', '美股大涨', 'follow_up')])
+    rt.store.finish_run(run_id, 'completed', {})
+    for html in (client.get('/').text, client.get(f'/briefs/{run_id}').text):
+        assert '旧报道u' not in html and '此前' not in html
+        assert '旧报道f' in html and '前情' in html
+
+
+def test_reference_list_shows_chinese_title_with_original_as_tooltip(tmp_path):
+    rt, client = make_client(tmp_path)
+    run_id = rt.store.start_run('test')
+    a = Article(id='a', source='Guardian', url='https://x/1', title='Brazilian Amazon deforestation falls', published_at=datetime.now(timezone.utc))
+    an = ArticleAnalysis(title_zh='巴西亚马孙毁林面积创新低', region='international', topic='environment', topic_confidence=0.9, content_type='news',
+                         has_new_development=True, entities=[], key_facts=['f'], event_fingerprint='x', impact=4, impact_reason='r')
+    rt.store.save_events(run_id, [Event(id='e', articles=[a], analyses={'a': an},
+                                        summary=EventSummary.model_validate({'headline': '巴西毁林创新低', 'sentences': [{'text': '毁林下降。', 'sources': [1]}]}))])
+    rt.store.finish_run(run_id, 'completed', {})
+    for html in (client.get('/').text, client.get(f'/briefs/{run_id}').text):
+        assert 'Guardian｜巴西亚马孙毁林面积创新低' in html
+        assert 'title="原题：Brazilian Amazon deforestation falls"' in html
+
+
+def test_sources_page_offers_presets_edit_prefill_and_quick_add(tmp_path):
+    rt, client = make_client(tmp_path)
+    login(client)
+    html = client.get('/admin/sources').text
+    assert '推荐来源' in html and '法广中文' in html.split('id="presets"')[1] and '一键添加' in html
+    client.post('/admin/sources/preset', data={'feed_url': 'https://www.rfi.fr/cn/rss'})
+    added = [s for s in rt.store.list_sources() if s.name == '法广中文']
+    assert added and added[0].enabled
+    assert '法广中文' not in client.get('/admin/sources').text.split('id="presets"')[1]
+    client.post('/admin/sources/preset', data={'feed_url': 'https://evil.test/rss'})
+    assert not any(s.feed_url == 'https://evil.test/rss' for s in rt.store.list_sources())
+    edit = client.get(f'/admin/sources?edit={added[0].id}').text
+    assert 'value="法广中文"' in edit and f'name="source_id" value="{added[0].id}"' in edit
+
+
+def test_deleted_default_source_stays_deleted_after_restart(tmp_path):
+    rt, client = make_client(tmp_path)
+    login(client)
+    bbc = next(s for s in rt.store.list_sources() if s.name == 'BBC')
+    client.post(f'/admin/sources/{bbc.id}/delete')
+    settings = Settings(data_dir=tmp_path, admin_password='pw', secret_key='s', llm_api_key='k', _env_file=None)
+    assert not any(s.name == 'BBC' for s in build_runtime(settings).store.list_sources())
+
+
+def test_source_test_fetch_reports_result(tmp_path, monkeypatch):
+    from news_admin import runtime as runtime_mod
+    from news_admin.fetch import FetchResult
+    rt, client = make_client(tmp_path)
+    login(client)
+    monkeypatch.setattr(runtime_mod, 'fetch_source', lambda source, since=None, **kw: FetchResult(
+        source=source, articles=[Article(id='x', source=source.name, url='https://x/1', title='测试标题一', published_at=datetime.now(timezone.utc))]))
+    sid = rt.store.list_sources()[0].id
+    page = client.post(f'/admin/sources/{sid}/test', follow_redirects=True).text
+    assert '抓到 1 条' in page and '测试标题一' in page

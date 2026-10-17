@@ -42,9 +42,15 @@ def _zh_small_number(word: str) -> int | None:
     return _ZH_DIGITS.get(word) if len(word) == 1 else None
 
 
+_YEAR_RANGE_RE = re.compile(r'\b((?:19|20)\d{2})\s*[-–/]\s*(\d{2})\b')
+_CJK_RE = re.compile(r'[\u4e00-\u9fff]')
+
+
 def evidence_numbers(text: str) -> set[str]:
-    """来源中可作为证据的数字：阿拉伯数字 + 英文月份名/数字词 + 中文小数字（如「三名」）。"""
+    """来源中可作为证据的数字：阿拉伯数字 + 英文月份名/数字词 + 中文小数字（如「三名」）+ 年份区间缩写（2011-12 → 2012）。"""
     found = _numbers(text)
+    for start, short in _YEAR_RANGE_RE.findall(text):
+        found.add(start[:2] + short)
     for word in _EN_WORD_RE.findall(text.lower()):
         if word in _WORDS:
             found.add(str(_WORDS[word]))
@@ -85,10 +91,31 @@ def fallback_summary(articles: list[Article], title: str, analysis: ArticleAnaly
         kept = [s for s in sentences if not validate_summary(EventSummary(headline=title[:32], sentences=[s]), articles[:1])]
         if kept:
             return EventSummary(headline=title[:32], sentences=kept[:3], conflicts=[])
+        # 关键事实里的数字都没通过校验：仍用模型的中文关键事实（去掉无法核实的数字句前先保留第一条），不退回外文原文
+        chinese = [s for s in sentences if _CJK_RE.search(s.text)]
+        if chinese:
+            return EventSummary(headline=title[:32], sentences=chinese[:1], conflicts=[])
     lead = articles[0]
     text = lead.body or lead.title
     sentence = next((part.strip() for part in _SENTENCE_END_RE.split(text) if part.strip()), text)[:90]
+    if not _CJK_RE.search(sentence):
+        # 没有中文分析可用时，宁可只给中文标题，也不展示外文原句
+        sentence = title[:90]
     return EventSummary(headline=title[:32], sentences=[SummarySentence(text=sentence, sources=[1])], conflicts=[])
+
+
+def repair_degraded(event) -> bool:
+    """修复已保存的降级摘要：若当前摘要含非中文句子，用中文关键事实重建。返回是否改动。"""
+    summary = event.summary
+    if not event.summary_degraded or summary is None:
+        return False
+    if all(_CJK_RE.search(s.text) for s in summary.sentences):
+        return False
+    rebuilt = fallback_summary(event.articles, summary.headline, event.lead_analysis)
+    if [s.text for s in rebuilt.sentences] == [s.text for s in summary.sentences]:
+        return False
+    event.summary = rebuilt
+    return True
 
 
 def summarize_event(client: LLMClient, articles: list[Article], fallback_title: str, analysis: ArticleAnalysis | None = None, max_fix_rounds: int = 1) -> tuple[EventSummary, bool]:

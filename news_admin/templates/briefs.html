@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}往期简报{% endblock %}
 {% block content %}
-<section class="feed-head"><div><h1>往期简报</h1><p class="muted">每次运行生成一期，按评级分栏，便于回看当时的完整版面。</p></div></section>
+<section class="feed-head"><div><h1>往期简报</h1><p class="muted">每次运行生成一期，按要闻和主题分栏。{% if admin %}删除某期后，其中的新闻也会从首页移除。{% endif %}</p></div></section>
 {% if briefs %}
 <ul class="brief-list">
   {% for b in briefs %}
@@ -11,6 +11,11 @@
       <span class="brief-main"><span class="brief-top">{{ b.top or '（空）' }}</span><span class="muted">{{ local_time(b.finished_at) }} · {{ b.events }} 条{% if b.trigger == 'schedule' %} · 定时{% endif %}</span></span>
       <span class="chev" aria-hidden="true">›</span>
     </a>
+    {% if admin %}
+    <form method="post" action="/admin/briefs/{{ b.id }}/delete" class="brief-del" onsubmit="return confirm('删除简报 #{{ b.id }}？其中的新闻也会从首页移除，不可恢复。')">
+      <button class="link link-danger" aria-label="删除简报 #{{ b.id }}">删除</button>
+    </form>
+    {% endif %}
   </li>
   {% endfor %}
 </ul>

@@ -3,47 +3,77 @@
 {% block content %}
 <div class="page-head">
   <div><h1>新闻来源</h1><p class="muted">权重影响排序（默认 1.0）；网页列表源需要填写文章链接正则。</p></div>
-  <a class="btn btn-primary" href="#source-form">新增来源</a>
+  <div class="head-actions"><a class="btn" href="#presets">推荐来源{% if presets %} <span class="chip-count">{{ presets | length }}</span>{% endif %}</a><a class="btn btn-primary" href="#source-form">自定义来源</a></div>
 </div>
 <section class="panel">
-  <div class="table-wrap">
-  <table class="table table-cards">
-    <thead><tr><th>名称</th><th>类型</th><th>地址</th><th class="num">权重</th><th class="num">条数</th><th>正文</th><th>状态</th><th>最近成功</th><th class="num">连续失败</th><th></th></tr></thead>
-    <tbody>
+  <ul class="source-list">
     {% for s in sources %}
     {% set h = health.get(s.id, {}) %}
-    <tr class="{% if not s.enabled %}row-disabled{% endif %}">
-      <td class="nowrap"><b>{{ s.name }}</b> <span class="muted">#{{ s.id }}</span></td>
-      <td data-label="类型" class="nowrap">{{ source_kinds[s.kind] }}</td>
-      <td data-label="地址" class="url" title="{{ s.feed_url }}{% if s.link_pattern %}&#10;链接正则：{{ s.link_pattern }}{% endif %}"><a href="{{ s.feed_url }}" target="_blank" rel="noopener noreferrer">{{ s.feed_url }}</a></td>
-      <td data-label="权重" class="num">{{ s.weight }}</td>
-      <td data-label="条数" class="num">{{ s.max_items }}</td>
-      <td data-label="正文">{{ '抓取' if s.fetch_body else '摘要' }}</td>
-      <td data-label="状态">{% if not s.enabled %}<span class="status status-stale">停用</span>{% elif h.consecutive_failures %}<span class="status status-failed" title="{{ h.last_error }}">异常</span>{% else %}<span class="status status-completed">正常</span>{% endif %}</td>
-      <td data-label="最近成功" class="nowrap">{{ local_time(h.last_ok_at, '%m-%d %H:%M') if h.last_ok_at else '—' }}</td>
-      <td data-label="连续失败" class="num {% if h.consecutive_failures %}text-error{% endif %}" title="{{ h.last_error }}">{{ h.consecutive_failures }}</td>
-      <td class="actions">
-        <form method="post" action="/admin/sources/{{ s.id }}/toggle"><button class="link">{{ '停用' if s.enabled else '启用' }}</button></form>
-        <form method="post" action="/admin/sources/{{ s.id }}/delete" onsubmit="return confirm('删除来源「{{ s.name }}」？')"><button class="link link-danger">删除</button></form>
-      </td>
-    </tr>
+    <li class="source-row{% if not s.enabled %} is-off{% endif %}">
+      <div class="source-info">
+        <div class="source-name">
+          <b>{{ s.name }}</b>
+          {% if not s.enabled %}<span class="status status-stale">停用</span>{% elif h.consecutive_failures %}<span class="status status-failed" title="{{ h.last_error }}">异常 · 连续失败 {{ h.consecutive_failures }} 次</span>{% else %}<span class="status status-completed">正常</span>{% endif %}
+        </div>
+        <div class="source-meta">
+          <span>{{ source_kinds[s.kind] }}</span>
+          <span>权重 {{ s.weight }}</span>
+          <span>每次 {{ s.max_items }} 条</span>
+          <span>{{ '抓正文' if s.fetch_body else '仅摘要' }}</span>
+          <span>最近成功 {{ local_time(h.last_ok_at, '%m-%d %H:%M') if h.last_ok_at else '—' }}</span>
+        </div>
+        <a class="source-url" href="{{ s.feed_url }}" target="_blank" rel="noopener noreferrer" title="{{ s.feed_url }}{% if s.link_pattern %}&#10;链接正则：{{ s.link_pattern }}{% endif %}">{{ s.feed_url }}</a>
+        {% if h.consecutive_failures and h.last_error %}<p class="text-error small">{{ h.last_error }}</p>{% endif %}
+      </div>
+      <div class="source-actions">
+        <form method="post" action="/admin/sources/{{ s.id }}/toggle"><button class="btn {{ 'btn-ghost' if s.enabled else 'btn-primary' }}">{{ '停用' if s.enabled else '启用' }}</button></form>
+        <form method="post" action="/admin/sources/{{ s.id }}/test"><button class="btn btn-ghost">测试</button></form>
+        <a class="btn btn-ghost" href="/admin/sources?edit={{ s.id }}#source-form">编辑</a>
+        <form method="post" action="/admin/sources/{{ s.id }}/delete" onsubmit="return confirm('删除来源「{{ s.name }}」？')"><button class="btn btn-ghost link-danger">删除</button></form>
+      </div>
+    </li>
     {% endfor %}
-    </tbody>
-  </table>
-  </div>
+  </ul>
 </section>
+{% if test_result %}
+<section class="panel" id="test">
+  <h2>测试抓取：{{ test_result.name }}</h2>
+  {% if test_result.error and not test_result.count %}<div class="alert alert-error">{{ test_result.error }}</div>{% endif %}
+  <p>抓到 {{ test_result.count }} 条（当前时间窗内，只取列表，不调用模型）</p>
+  <ul class="plain-list">{% for it in test_result['items'] %}<li><a href="{{ it.url }}" target="_blank" rel="noopener noreferrer">{{ it.title }}</a> <span class="muted">{{ it.time }}</span></li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+<section class="panel" id="presets">
+  <h2>推荐来源</h2>
+  <p class="hint">未添加或已停用的备选来源，说明为实测结论。中文来源无需翻译，成本更低。</p>
+  {% if presets %}
+  <div class="preset-grid">
+    {% for p in presets %}
+    <div class="preset">
+      <div class="preset-main"><b>{{ p.name }}</b><span class="muted small">{{ source_kinds[p.kind] }}</span></div>
+      <p class="small">{{ p.note or '默认来源' }}</p>
+      <form method="post" action="/admin/sources/preset"><input type="hidden" name="feed_url" value="{{ p.feed_url }}"><button class="btn">{{ '启用' if p.added else '一键添加' }}</button></form>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">推荐来源都已启用。</p>
+  {% endif %}
+</section>
+
 <section class="panel" id="source-form">
-  <h2>新增 / 修改来源</h2>
+  <h2>{{ '编辑来源：' ~ editing.name if editing else '自定义来源' }}</h2>
   <form method="post" action="/admin/sources" class="form-grid">
-    <label class="field"><span>ID（修改已有来源时填写）</span><input name="source_id" type="number" inputmode="numeric"></label>
-    <label class="field"><span>名称</span><input name="name" required></label>
-    <label class="field"><span>类型</span><select name="kind">{% for k, label in source_kinds.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
-    <label class="field span-2"><span>地址（Feed / 接口 / 列表页）</span><input name="feed_url" type="url" required spellcheck="false"></label>
-    <label class="field span-2"><span>文章链接正则（仅网页列表页，如 <code>zaobao\.com\.sg/news/world/story\d+</code>）</span><input name="link_pattern" spellcheck="false"></label>
-    <label class="field"><span>权重</span><input name="weight" type="number" step="0.1" value="1.0"></label>
-    <label class="field"><span>每次最多条数</span><input name="max_items" type="number" value="20"></label>
-    <label class="switch span-2"><input type="checkbox" name="fetch_body" value="1" checked><span>抓取正文（关闭则只用 Feed 摘要，更快但信息少）</span></label>
-    <div class="span-2"><button class="btn btn-primary">保存来源</button></div>
+    {% if editing %}<input name="source_id" value="{{ editing.id }}" type="hidden">{% endif %}
+    <label class="field"><span>名称</span><input name="name" required value="{{ editing.name if editing else '' }}"></label>
+    <label class="field"><span>类型</span><select name="kind">{% for k, label in source_kinds.items() %}<option value="{{ k }}" {% if editing and editing.kind == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label class="field span-2"><span>地址（RSS / JSON Feed / 网页列表页）</span><input name="feed_url" type="url" required spellcheck="false" value="{{ editing.feed_url if editing else '' }}"></label>
+    <label class="field span-2"><span>文章链接正则（仅「网页列表」类型需要，如 <code>zaobao\.com\.sg/news/world/story\d+</code>）</span><input name="link_pattern" spellcheck="false" value="{{ editing.link_pattern if editing else '' }}"></label>
+    <label class="field"><span>权重（排序加权，默认 1.0）</span><input name="weight" type="number" step="0.1" value="{{ editing.weight if editing else '1.0' }}"></label>
+    <label class="field"><span>每次最多条数</span><input name="max_items" type="number" value="{{ editing.max_items if editing else 6 }}"></label>
+    <label class="switch span-2"><input type="checkbox" name="fetch_body" value="1" {% if not editing or editing.fetch_body %}checked{% endif %}><span>抓取正文（关闭则只用 Feed 摘要，更快但信息少）</span></label>
+    <div class="span-2 form-actions"><button class="btn btn-primary">{{ '保存修改' if editing else '添加来源' }}</button>{% if editing %}<a class="btn btn-ghost" href="/admin/sources">取消</a>{% endif %}</div>
   </form>
 </section>
 {% endblock %}

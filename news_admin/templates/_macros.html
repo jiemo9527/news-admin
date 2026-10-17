@@ -46,9 +46,10 @@
       {{ event_times(event) }}
       <span class="sources" title="{{ event.sources | join('、') }}">{{ event.sources[:3] | join('、') }}{% if event.sources | length > 3 %} 等 {{ event.sources | length }} 家{% endif %}</span>
     </div>
-    {% if event.previous %}
-    {% set ref = event.previous[0] %}
-    <p class="news-prev"><span class="label">{{ '此前' if ref.relation == 'update' else '前情' }}</span><a href="/briefs/{{ ref.run_id }}#e-{{ ref.event_id }}">{{ ref.headline }}</a><span class="muted">{{ format_time(ref.published_at, ref.time_precision) }}</span></p>
+    {% set context = event.previous | selectattr('relation', 'equalto', 'follow_up') | list %}
+    {% if context %}
+    {% set ref = context[0] %}
+    <p class="news-prev"><span class="label">前情</span><a href="/briefs/{{ ref.run_id }}#e-{{ ref.event_id }}">{{ ref.headline }}</a><span class="muted">{{ format_time(ref.published_at, ref.time_precision) }}</span></p>
     {% endif %}
     <details class="news-more">
       <summary>来源与评分{% if r %} <span class="muted">· {{ '%.1f' % r.total }} 分</span>{% endif %}</summary>
@@ -57,7 +58,8 @@
         <ol class="refs">
           {% for article in event.articles %}
           {% set ac, au = article_times(article) %}
-          <li><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.source }}｜{{ article.title }}</a>
+          {% set an = event.analyses.get(article.id) %}
+          <li><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer" {% if an and an.title_zh != article.title %}title="原题：{{ article.title }}"{% endif %}>{{ article.source }}｜{{ an.title_zh if an else article.title }}</a>
             <span class="muted">创建 {{ ac }}{% if au %} · 更新 {{ au }}{% endif %}</span>
             {% if article.duplicate_sources %}<span class="muted">（另有 {{ article.duplicate_sources | join('、') }} 转载）</span>{% endif %}</li>
           {% endfor %}

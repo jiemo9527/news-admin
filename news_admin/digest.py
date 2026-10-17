@@ -52,8 +52,9 @@ def event_text(event: Event) -> str:
     if summary:
         lines.append(''.join(s.text for s in summary.sentences))
         lines.extend(f'说法不一：{c}' for c in summary.conflicts)
-    if event.previous:
-        ref = event.previous[0]
+    context = [r for r in event.previous if r.relation == 'follow_up']
+    if context:
+        ref = context[0]
         lines.append(f'前情：{ref.headline}（{format_time(ref.published_at, ref.time_precision)}）')
     lines.append('来源：' + '、'.join(event.sources))
     return '\n'.join(lines)

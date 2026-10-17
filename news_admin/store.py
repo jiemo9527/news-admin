@@ -192,8 +192,12 @@ class Store:
 
     # ---------- sources ----------
     def seed_sources(self, sources: list[dict]) -> None:
+        """写入默认来源；用户在后台删除过的默认来源不再补回。"""
+        removed = set(json.loads(self.get_setting('removed_sources', '[]')))
         with self._conn() as conn:
             for s in sources:
+                if s['feed_url'] in removed:
+                    continue
                 conn.execute(
                     'INSERT OR IGNORE INTO sources(name, feed_url, weight, kind, link_pattern, max_items) VALUES (?, ?, ?, ?, ?, ?)',
                     (s['name'], s['feed_url'], s.get('weight', 1.0), s.get('kind', 'rss'), s.get('link_pattern', ''), s.get('max_items', 20)),
@@ -231,8 +235,29 @@ class Store:
                 )
 
     def delete_source(self, source_id: int) -> None:
+        rows = self._rows('SELECT feed_url FROM sources WHERE id=?', (source_id,))
+        if rows:
+            removed = set(json.loads(self.get_setting('removed_sources', '[]'))) | {rows[0]['feed_url']}
+            self.set_setting('removed_sources', json.dumps(sorted(removed)))
         with self._conn() as conn:
             conn.execute('DELETE FROM sources WHERE id=?', (source_id,))
+
+    def add_preset_source(self, preset: dict) -> None:
+        removed = set(json.loads(self.get_setting('removed_sources', '[]'))) - {preset['feed_url']}
+        self.set_setting('removed_sources', json.dumps(sorted(removed)))
+        with self._conn() as conn:
+            conn.execute(
+                'INSERT INTO sources(name, feed_url, weight, kind, link_pattern, max_items, enabled) VALUES (?,?,?,?,?,?,1) '
+                'ON CONFLICT(feed_url) DO UPDATE SET enabled=1',
+                (preset['name'], preset['feed_url'], preset.get('weight', 1.0), preset.get('kind', 'rss'),
+                 preset.get('link_pattern', ''), preset.get('max_items', 6)),
+            )
+
+    def delete_run(self, run_id: int) -> bool:
+        """删除一期简报（运行记录、事件、链接索引、推送记录一并删除）。"""
+        with self._conn() as conn:
+            conn.execute('DELETE FROM event_urls WHERE run_id=?', (run_id,))
+            return conn.execute("DELETE FROM runs WHERE id=? AND status != 'running'", (run_id,)).rowcount > 0
 
     def set_source_enabled(self, source_id: int, enabled: bool) -> None:
         with self._conn() as conn:

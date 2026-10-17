@@ -1,3 +1,4 @@
+import re
 from news_admin.models import Article, EventSummary
 from news_admin.summarize import fallback_summary, validate_summary
 
@@ -72,3 +73,30 @@ def test_fallback_prefers_chinese_key_facts_that_pass_the_number_check():
                          entities=[], key_facts=['毁林率下降50%。', '毁林率下降41.8%，为1988年以来最低。'], event_fingerprint='x', impact=3, impact_reason='r')
     s = fallback_summary(EN, title='亚马孙毁林率创新低', analysis=an)
     assert [x.text for x in s.sentences] == ['毁林率下降41.8%，为1988年以来最低。']
+
+
+
+def test_abbreviated_year_range_counts_as_evidence():
+    src = [Article(id='a', source='s', url='u', title='t', body='The previous low was 4,571 sq km in 2011-12.')]
+    assert validate_summary(summary([{'text': '此前最低为2011至2012年的4571平方公里。', 'sources': [1]}]), src) == []
+
+
+def test_fallback_never_returns_foreign_language_text_when_analysis_exists():
+    from news_admin.models import ArticleAnalysis
+    an = ArticleAnalysis(title_zh='亚马孙毁林率创新低', region='international', topic='environment', topic_confidence=0.9, content_type='news',
+                         has_new_development=True, entities=[], key_facts=['毁林率下降50%。'], event_fingerprint='x', impact=3, impact_reason='r')
+    s = fallback_summary(EN, title='亚马孙毁林率创新低', analysis=an)
+    assert all(re.search(r'[\u4e00-\u9fff]', x.text) for x in s.sentences)
+
+
+def test_repair_rewrites_stored_english_fallbacks():
+    from news_admin.models import ArticleAnalysis, Event, SummarySentence
+    from news_admin.summarize import repair_degraded
+    an = ArticleAnalysis(title_zh='亚马孙毁林率创新低', region='international', topic='environment', topic_confidence=0.9, content_type='news',
+                         has_new_development=True, entities=[], key_facts=['毁林率下降41.8%，为1988年以来最低。'], event_fingerprint='x', impact=3, impact_reason='r')
+    lead = EN[0]
+    old = EventSummary(headline='亚马孙毁林率创新低', sentences=[SummarySentence(text=lead.body[:60], sources=[1])])
+    event = Event(id='e', articles=[lead], analyses={lead.id: an}, summary=old, summary_degraded=True)
+    assert repair_degraded(event) is True
+    assert event.summary.sentences[0].text == '毁林率下降41.8%，为1988年以来最低。'
+    assert repair_degraded(event) is False
