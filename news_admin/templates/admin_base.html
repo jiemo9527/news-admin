@@ -4,6 +4,7 @@
 {% block page %}
 <div class="admin-shell">
   <aside class="sidenav" aria-label="管理导航">
+    <div class="sidenav-links">
     <a href="/admin" {% if path == '/admin' or path.startswith('/admin/runs') %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 3h6v8H3zM11 3h6v5h-6zM11 10h6v7h-6zM3 13h6v4H3z"/></svg>概览</a>
     <a href="/admin/sources" {% if path.startswith('/admin/sources') %}aria-current="page"{% endif %}>
@@ -18,6 +19,7 @@
     {% endif %}
     <a href="/admin/settings" {% if path.startswith('/admin/settings') %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.6 2h2.8l.4 2.2 1.5.8 2.1-.8 1.4 2.4-1.7 1.5v1.8l1.7 1.5-1.4 2.4-2.1-.8-1.5.8-.4 2.2H8.6l-.4-2.2-1.5-.8-2.1.8-1.4-2.4 1.7-1.5V8.1L3.2 6.6l1.4-2.4 2.1.8 1.5-.8zM10 7.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z"/></svg>系统设置</a>
+    </div>
     <form method="post" action="/logout" class="sidenav-logout"><button class="btn btn-ghost btn-block">退出登录</button></form>
   </aside>
   <main class="admin-main">

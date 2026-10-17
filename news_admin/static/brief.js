@@ -7,7 +7,7 @@
   const activate = (id) => links.forEach(a => {
     if (a.hash === '#' + id) a.setAttribute('aria-current', 'location');
     else a.removeAttribute('aria-current');
-  });
+  }) || window.newsCenterActive?.(nav.querySelector('.brief-nav-track'));
   const updateOffset = () => {
     const header = document.querySelector('.topbar');
     const h = header?.getBoundingClientRect().height || 56;
