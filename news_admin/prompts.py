@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from .models import REGION_LABELS, TOPIC_LABELS, Article
+from .models import REGION_LABELS, TOPIC_LABELS, Article, Event
+from .timefmt import format_time
 
-ANALYZE_VERSION = 'analyze-v3'
+ANALYZE_VERSION = 'analyze-v4'
 SAME_EVENT_VERSION = 'same-event-v1'
-SUMMARY_VERSION = 'summary-v2'
+CONTINUITY_VERSION = 'continuity-v1'
+SUMMARY_VERSION = 'summary-v3'
 
 _TOPIC_GUIDE = '\n'.join(
     f'- {topic.value}（{label}）' for topic, label in TOPIC_LABELS.items()
@@ -29,8 +31,14 @@ military 只用于国家/武装组织之间的冲突：战争、空袭、武装�
 刑事案件（枪击、凶杀、判刑）、事故、自然灾害 → society；疾病、药品、医保 → health。
 拿不准时 topic_confidence 给低分（<0.5），不要硬选。
 
-## is_opinion
-评论、社论、专栏、“分析”类文章为 true；事实报道为 false。
+## content_type 内容类型
+- news：报道新发生的事实（事件、决定、数据发布、表态、判决）
+- opinion：评论、社论、专栏、“观察/分析”类
+- feature：科普、历史回顾、地理文化介绍、人物特写、生活方式（如「长江名称历经演变」）
+- promo：成就展示、宣传、活动报道、没有具体政策或数据的考察通稿
+
+## has_new_development
+文章是否包含近几天新发生、读者此前不知道的事实。纯背景介绍、历史回顾、科普、常识 → false。
 
 ## entities
 关键参与方，最多 8 个。统一用中文通行译名（如 Federal Reserve → 美联储，Jerome Powell → 鲍威尔），没有通行译名时保留原文。
@@ -42,12 +50,12 @@ military 只用于国家/武装组织之间的冲突：战争、空袭、武装�
 格式「主体|行为|对象|地点」，用最短的中文名词，例如「美联储|降息25基点|联邦基金利率|美国」。
 同一事件的不同报道应得到相近的指纹。
 
-## impact 影响力评级
+## impact 对读者的实际意义（投资、决策、安全、生活）
 5：影响一国以上整体局势或全球市场的重大事件（战争爆发、央行大幅调息、大国元首会晤达成协议）
-4：影响一个国家/大型行业的重要政策、重大灾难、龙头企业重大变动
+4：影响一个国家/大型行业的重要政策、重大灾难、龙头企业重大变动、重要经济数据
 3：有一定影响范围的政策、公司、社会事件
 2：局部、常规性事件
-1：花边、软新闻
+1：没有实际意义：花边、软新闻、科普、历史文化介绍、纯宣传、活动开幕
 impact_reason 用一句话说明依据。
 
 ## title_zh
@@ -75,6 +83,29 @@ def same_event_user(left: Article, right: Article, left_fp: str, right_fp: str) 
     )
 
 
+CONTINUITY_SYSTEM = """判断「新事件」与此前已报道的「旧事件」是什么关系。
+
+- same_event：报道的是同一件事（同一主体、同一行为、同一时间地点），新事件只是补充了细节或更多来源
+- follow_up：同一条故事线上的新进展——由旧事件直接引发或延续的新事实
+  （如：A国宣布制裁 → B国宣布反制；央行降息 → 次日股市大涨；地震 → 伤亡人数上调、救援进展；起诉 → 判决）
+- unrelated：只是同一领域或涉及相同国家/人物，但没有直接因果或延续关系
+reason 用一句中文说明依据。"""
+
+
+def _event_brief(event: Event) -> str:
+    analysis = event.lead_analysis
+    first = event.first_published
+    when = format_time(first.published_at, first.time_precision) if first else '时间未知'
+    title = event.summary.headline if event.summary else (analysis.title_zh if analysis else event.lead.title)
+    facts = '；'.join(analysis.key_facts[:3]) if analysis else event.lead.body[:200]
+    fingerprint = analysis.event_fingerprint if analysis else ''
+    return f'标题：{title}\n时间：{when}\n指纹：{fingerprint}\n事实：{facts}'
+
+
+def continuity_user(new: Event, old: Event) -> str:
+    return f'【旧事件】\n{_event_brief(old)}\n\n【新事件】\n{_event_brief(new)}'
+
+
 SUMMARY_SYSTEM = """你是新闻编辑，把同一事件的多篇报道写成一段中文简报。
 
 硬性要求：
@@ -84,11 +115,13 @@ SUMMARY_SYSTEM = """你是新闻编辑，把同一事件的多篇报道写成一
 3. 数字、日期、人名、机构名照抄来源原文，不要换算或四舍五入；英文来源的人名和机构可用通行中文译名。
 4. 2-4 句，总长不超过 180 字，最重要的事实放第一句。
 5. 来源之间说法不一致（数字、责任方、因果）时，在 conflicts 中写明“A 称……；B 称……”，正文只写一致的部分。
-6. headline：≤32 字，客观陈述事实。"""
+6. 事件发生的时间写清楚：来源写了具体日期就照抄（如「16日」「周三」），不要写「今天」「近日」。
+7. headline：≤32 字，客观陈述事实。"""
 
 
 def summary_user(articles: list[Article]) -> str:
     parts = []
     for index, article in enumerate(articles, 1):
-        parts.append(f'[{index}] {article.source}｜{article.title}\n{article.body[:1200]}')
+        when = format_time(article.published_at, article.time_precision)
+        parts.append(f'[{index}] {article.source}｜发布：{when}｜{article.title}\n{article.body[:1200]}')
     return '\n\n'.join(parts)

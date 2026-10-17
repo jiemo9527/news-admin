@@ -63,6 +63,18 @@ class _Entry:
     title: str = ''
     summary: str = ''
     published: datetime | None = None
+    precision: str = 'none'
+    image: str = ''
+
+
+@dataclass
+class _Page:
+    body: str = ''
+    title: str = ''
+    published: datetime | None = None
+    updated: datetime | None = None
+    precision: str = 'none'
+    image: str = ''
 
 
 def _html_to_text(value: str) -> str:
@@ -95,8 +107,22 @@ def _list_rss(client: httpx.Client, source: Source) -> list[_Entry]:
             title=clean_text(entry.get('title', '')),
             summary=_html_to_text(entry.get('summary', '') or entry.get('description', '')),
             published=datetime(*parsed[:6], tzinfo=timezone.utc) if parsed else None,
+            precision='exact' if parsed else 'none',
+            image=_rss_image(entry),
         ))
     return entries
+
+
+def _rss_image(entry: Any) -> str:
+    for key in ('media_thumbnail', 'media_content'):
+        for media in entry.get(key) or []:
+            url = media.get('url', '')
+            if url and media.get('medium', 'image') == 'image':
+                return url
+    for enclosure in entry.get('enclosures') or []:
+        if str(enclosure.get('type', '')).startswith('image/') and enclosure.get('href'):
+            return enclosure['href']
+    return ''
 
 
 def _list_jsonfeed(client: httpx.Client, source: Source) -> list[_Entry]:
@@ -113,6 +139,8 @@ def _list_jsonfeed(client: httpx.Client, source: Source) -> list[_Entry]:
             title=clean_text(simplified.get('title') or item.get('title', '')),
             summary=clean_text(item.get('summary') or _html_to_text(item.get('content_html', ''))),
             published=_parse_time(item.get('_original_published') or item.get('date_published')),
+            precision='exact' if (item.get('_original_published') or item.get('date_published')) else 'none',
+            image=str(item.get('image') or ''),
         ))
     return entries
 
@@ -128,6 +156,8 @@ def _list_cctv(client: httpx.Client, source: Source) -> list[_Entry]:
             title=clean_text(item.get('title', '')),
             summary=clean_text(item.get('brief', '')),
             published=_parse_time(item.get('focus_date'), SHANGHAI),
+            precision='exact' if item.get('focus_date') else 'none',
+            image=str(item.get('image') or ''),
         )
         for item in payload.get('data', {}).get('list', [])
     ]
@@ -156,6 +186,7 @@ def _list_html(client: httpx.Client, source: Source) -> list[_Entry]:
         if date and not entry.published:
             try:
                 entry.published = datetime(int(date[1]), int(date[2]), int(date[3]), 12, tzinfo=SHANGHAI).astimezone(timezone.utc)
+                entry.precision = 'date'
             except ValueError:
                 pass
     return list(seen.values())
@@ -188,36 +219,66 @@ def _page_title(soup: BeautifulSoup) -> str:
         title = tail if len(head) <= 8 else head
     return title.strip()
 
-def _fetch_page(client: httpx.Client, url: str) -> tuple[str, str, datetime | None]:
-    """返回 (正文, 页面标题, 发布时间)。失败时返回空值，由调用方降级。"""
+_PUBLISHED_META = (
+    'meta[property="article:published_time"]', 'meta[itemprop="datePublished"]',
+    'meta[name="pubdate"]', 'meta[name="PubDate"]', 'meta[name="publishdate"]',
+)
+_UPDATED_META = ('meta[property="article:modified_time"]', 'meta[itemprop="dateModified"]', 'meta[property="og:updated_time"]')
+_DATE_ONLY_RE = re.compile(r'\d{4}-\d{2}-\d{2}')
+
+
+def _meta_time(soup: BeautifulSoup, selectors: tuple[str, ...]) -> tuple[datetime | None, str]:
+    """返回 (时间, 精度)。只有日期没有时刻的值标为 date，放在北京时间正午，不编造时刻。"""
+    for selector in selectors:
+        tag = soup.select_one(selector)
+        value = str(tag.get('content', '')).strip() if tag else ''
+        if not value:
+            continue
+        if _DATE_ONLY_RE.fullmatch(value):
+            parsed = _parse_time(f'{value}T12:00:00', SHANGHAI)
+            if parsed:
+                return parsed, 'date'
+        parsed = _parse_time(value, SHANGHAI)
+        if parsed:
+            return parsed, 'exact'
+    return None, 'none'
+
+
+def _fetch_page(client: httpx.Client, url: str) -> _Page:
+    """抓文章页：正文、标题、发布/更新时间、配图。失败返回空 _Page，由调用方降级到列表数据。"""
     try:
         response = client.get(url)
         if response.status_code >= 400:
-            return '', '', None
+            return _Page()
         data = trafilatura.bare_extraction(
             response.text, url=url, favor_precision=True, with_metadata=True, include_comments=False, include_tables=False
         )
     except (httpx.HTTPError, ValueError):
-        return '', '', None
+        return _Page()
     meta: dict[str, Any] = {}
     if data is not None:
         meta = data.as_dict() if hasattr(data, 'as_dict') else dict(data)
     text = clean_text(meta.get('text') or '')
-    soup = BeautifulSoup(response.text, 'lxml')
-    published = None
-    for selector in (
-        'meta[property="article:published_time"]', 'meta[name="publishdate"]',
-        'meta[name="PubDate"]', 'meta[itemprop="datePublished"]',
-    ):
-        tag = soup.select_one(selector)
-        if tag and tag.get('content'):
-            published = _parse_time(tag['content'], SHANGHAI)
-            if published:
-                break
+    soup = BeautifulSoup(response.content, 'lxml')
+    published, precision = _meta_time(soup, _PUBLISHED_META)
     if published is None and meta.get('date'):
-        published = _parse_time(f"{meta['date']}T12:00:00", SHANGHAI)
-    title = _page_title(soup) or clean_text(meta.get('title') or '')
-    return (text if len(text) >= MIN_BODY_CHARS else ''), title, published
+        published, precision = _parse_time(f"{meta['date']}T12:00:00", SHANGHAI), 'date'
+    updated, _ = _meta_time(soup, _UPDATED_META)
+    image = ''
+    og_image = soup.select_one('meta[property="og:image"]') or soup.select_one('meta[name="twitter:image"]')
+    if og_image and og_image.get('content'):
+        try:
+            image = str(response.url.join(str(og_image['content']).strip()))
+        except (httpx.InvalidURL, ValueError):
+            image = ''
+    return _Page(
+        body=text if len(text) >= MIN_BODY_CHARS else '',
+        title=_page_title(soup) or clean_text(meta.get('title') or ''),
+        published=published,
+        updated=updated if updated and published and updated > published else None,
+        precision=precision,
+        image=image,
+    )
 
 
 def fetch_source(
@@ -246,13 +307,15 @@ def fetch_source(
         candidates = [e for e in listed if e.url and fresh(e) and (e.title or is_html)][:limit]
 
         def build(entry: _Entry) -> Article | None:
-            body, page_title, page_time = ('', '', None)
-            if source.fetch_body or is_html:
-                body, page_title, page_time = _fetch_page(client, entry.url)
-            published = page_time or entry.published
+            page = _fetch_page(client, entry.url) if (source.fetch_body or is_html) else _Page()
+            # 精确时间优先；都只有日期时取页面
+            if page.precision == 'exact' or (page.published and entry.precision != 'exact'):
+                published, precision = page.published, page.precision
+            else:
+                published, precision = entry.published, entry.precision
             if published and now - published > max_age:
                 return None
-            title = (page_title or entry.title) if is_html else entry.title
+            title = (page.title or entry.title) if is_html else entry.title
             if not title:
                 return None
             url = canonical_url(entry.url)
@@ -261,8 +324,12 @@ def fetch_source(
                 source=source.name,
                 url=url,
                 title=title,
-                body=body or entry.summary,
+                body=page.body or entry.summary,
                 published_at=published,
+                updated_at=page.updated,
+                time_precision=precision,
+                fetched_at=now,
+                image_url=entry.image or page.image,
                 source_weight=source.weight,
             )
 

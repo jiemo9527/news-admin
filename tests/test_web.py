@@ -18,7 +18,7 @@ def make_client(tmp_path):
 def seed_run(rt):
     run_id = rt.store.start_run('test')
     a = Article(id='a', source='BBC', url='https://x/1', title='Fed cuts', published_at=datetime.now(timezone.utc))
-    an = ArticleAnalysis(title_zh='美联储降息', region='international', topic='economy', topic_confidence=0.9, is_opinion=False,
+    an = ArticleAnalysis(title_zh='美联储降息', region='international', topic='economy', topic_confidence=0.9, content_type='news', has_new_development=True,
                          entities=['美联储'], key_facts=['降息'], event_fingerprint='x', impact=4, impact_reason='r')
     s = EventSummary.model_validate({'headline': '美联储降息25个基点', 'sentences': [{'text': '美联储宣布降息。', 'sources': [1]}], 'conflicts': ['A称X；B称Y']})
     rt.store.save_events(run_id, [Event(id='e1', articles=[a], analyses={'a': an}, summary=s, score=9)])
@@ -86,3 +86,29 @@ def test_html_source_requires_valid_link_pattern(tmp_path):
     client.post('/admin/sources', data={'name': 'z', 'feed_url': 'https://z.test/', 'kind': 'html', 'link_pattern': r'/story\d+'})
     z = [s for s in rt.store.list_sources() if s.name == 'z'][0]
     assert z.kind == 'html' and z.link_pattern == r'/story\d+'
+
+
+def test_brief_shows_time_thumbnail_and_previous_coverage(tmp_path):
+    import io
+    from PIL import Image
+    from news_admin.models import EventRef
+    rt, client = make_client(tmp_path)
+    key = 'a' * 32
+    buf = io.BytesIO(); Image.new('RGB', (10, 10)).save(buf, 'WEBP')
+    (rt.thumbnails.directory / f'{key}.webp').write_bytes(buf.getvalue())
+    run_id = rt.store.start_run('test')
+    a = Article(id='a', source='BBC', url='https://x/1', title='Fed', published_at=datetime.now(timezone.utc), time_precision='exact')
+    b = Article(id='b', source='人民网', url='https://x/2', title='b', published_at=datetime.now(timezone.utc), time_precision='date')
+    an = ArticleAnalysis(title_zh='美股大涨', region='international', topic='economy', topic_confidence=0.9, content_type='news', has_new_development=True,
+                         entities=[], key_facts=['f'], event_fingerprint='x', impact=4, impact_reason='r')
+    s = EventSummary.model_validate({'headline': '美股因降息大涨', 'sentences': [{'text': '美股收涨。', 'sources': [1]}]})
+    ref = EventRef(run_id=1, event_id='old', headline='美联储降息25个基点', published_at=datetime.now(timezone.utc), time_precision='exact', relation='follow_up')
+    rt.store.save_events(run_id, [Event(id='e1', articles=[a, b], analyses={'a': an}, summary=s, score=9, thumbnail=key, previous=[ref])])
+    rt.store.finish_run(run_id, 'completed', {})
+    html = client.get(f'/briefs/{run_id}').text
+    assert f'/thumb/{key}' in html
+    assert '前情' in html and '美联储降息25个基点' in html and '/briefs/1#e-old' in html
+    assert '刚刚' in html and '未注明时刻' in html
+    response = client.get(f'/thumb/{key}')
+    assert response.status_code == 200 and response.headers['content-type'] == 'image/webp'
+    assert client.get('/thumb/' + 'b' * 32).status_code == 404

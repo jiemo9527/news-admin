@@ -1,6 +1,7 @@
-"""流水线编排：fetch → dedupe → analyze → cluster → 跨批次比对 → summarize → rank → 持久化。
+"""流水线编排：
+fetch → dedupe → analyze → 价值过滤 → cluster → 前序关联 → rank → summarize → 配图 → 持久化。
 
-所有外部依赖（抓取、模型、向量）通过 PipelineDeps 注入，测试中可替换为假实现。
+所有外部依赖（抓取、模型、向量、图片）通过 PipelineDeps 注入，测试中可替换为假实现。
 """
 
 from __future__ import annotations
@@ -9,18 +10,30 @@ import hashlib
 import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .cluster import ClusterConfig, Embed, Judge, cluster_articles, cosine, embedding_text
 from .dedupe import dedupe_articles
 from .fetch import FetchResult, Source
+from .filtering import FilterConfig, filter_reason
+from .images import choose_image
 from .llm import LLMCall
-from .models import Article, ArticleAnalysis, Event, EventSummary
+from .models import Article, ArticleAnalysis, Event, EventRef, EventSummary, Relation
 from .rank import score_event
 from .store import Store
 
 log = logging.getLogger(__name__)
+
+ContinuityJudge = Callable[[Event, Event], Relation]
+
+
+@dataclass
+class ContinuityConfig:
+    lookback_days: float = 7
+    candidates_per_event: int = 2
+    max_judge_calls: int = 40
+    max_refs: int = 4
 
 
 @dataclass
@@ -31,8 +44,12 @@ class PipelineDeps:
     judge_factory: Callable[[dict[str, ArticleAnalysis]], Judge]
     summarize: Callable[[list[Article], str, ArticleAnalysis | None], tuple[EventSummary, bool]]
     llm_calls: Callable[[], list[LLMCall]]
+    continuity_judge: ContinuityJudge | None = None
+    thumbnail: Callable[[str], str] | None = None
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
     cluster_config: ClusterConfig | None = None
+    filter_config: FilterConfig = field(default_factory=FilterConfig)
+    continuity_config: ContinuityConfig = field(default_factory=ContinuityConfig)
     max_events: int = 30
 
 
@@ -58,6 +75,27 @@ def analysis_embedding_text(article: Article, analysis: ArticleAnalysis | None) 
 
 def _event_id(articles: list[Article]) -> str:
     return hashlib.sha1('|'.join(sorted(a.url for a in articles)).encode()).hexdigest()[:12]
+
+
+def _event_text(event: Event) -> str:
+    return analysis_embedding_text(event.lead, event.lead_analysis)
+
+
+def _entities(event: Event) -> set[str]:
+    return {e for a in event.analyses.values() for e in a.entities}
+
+
+def _ref(run_id: int, event: Event, relation: str, reason: str = '') -> EventRef:
+    first = event.first_published
+    return EventRef(
+        run_id=run_id,
+        event_id=event.id,
+        headline=event.summary.headline if event.summary else event.lead.title,
+        published_at=first.published_at if first else None,
+        time_precision=first.time_precision if first else 'none',
+        relation=relation,  # type: ignore[arg-type]
+        reason=reason,
+    )
 
 
 class Pipeline:
@@ -92,6 +130,10 @@ class Pipeline:
             analyses = self.deps.analyze(articles)
             stats['articles_analyzed'] = len(analyses)
 
+            articles, filtered = self._filter(articles, analyses)
+            stats['articles_filtered'] = len(filtered)
+            stats['filtered'] = filtered[:80]
+
             config = self.deps.cluster_config or ClusterConfig()
             groups = cluster_articles(
                 articles, self.deps.embed, self.deps.judge_factory(analyses), config,
@@ -99,12 +141,16 @@ class Pipeline:
             )
             stats['clusters'] = len(groups)
 
-            events = [
-                Event(id=_event_id(group), articles=_order_articles(group), analyses={a.id: analyses[a.id] for a in group if a.id in analyses})
-                for group in groups
-            ]
-            events, unchanged = self._compare_with_history(run_id, events, config)
-            stats['events_unchanged'] = unchanged
+            events = []
+            for group in groups:
+                event = Event(
+                    id=_event_id(group), articles=_order_articles(group),
+                    analyses={a.id: analyses[a.id] for a in group if a.id in analyses},
+                )
+                event.story_id = event.id
+                events.append(event)
+            events, continuity = self._link_history(run_id, events, config)
+            stats.update(continuity)
 
             now = self.deps.now()
             for event in events:
@@ -119,6 +165,8 @@ class Pipeline:
                 degraded += int(event.summary_degraded)
             stats['events_published'] = len(events)
             stats['summaries_degraded'] = degraded
+
+            stats['events_with_thumbnail'] = self._attach_thumbnails(events)
 
             self.store.save_events(run_id, events)
             self.store.record_llm_calls(run_id, self.deps.llm_calls()[calls_before:])
@@ -142,40 +190,95 @@ class Pipeline:
             articles.extend(result.articles)
         return articles
 
-    def _compare_with_history(self, run_id: int, events: list[Event], config: ClusterConfig) -> tuple[list[Event], int]:
-        """与近 48 小时已发布事件比对：
-        - 命中旧事件且所有报道都已发布过 → 丢弃（不重复推送）
-        - 命中旧事件且出现新的报道（新 URL）→ 标记为更新
-        用 URL 而不是来源名判断，来源改名不会被误判为更新。
-        命中方式：共享 URL，或主报道向量相似度 ≥ 高阈值。
+    def _filter(self, articles: list[Article], analyses: dict[str, ArticleAnalysis]) -> tuple[list[Article], list[dict]]:
+        kept, dropped = [], []
+        for article in articles:
+            analysis = analyses.get(article.id)
+            reason = filter_reason(analysis, self.deps.filter_config) if analysis else None
+            if reason:
+                dropped.append({
+                    'source': article.source, 'title': analysis.title_zh if analysis else article.title,
+                    'url': article.url, 'reason': reason,
+                })
+            else:
+                kept.append(article)
+        return kept, dropped
+
+    def _link_history(self, run_id: int, events: list[Event], config: ClusterConfig) -> tuple[list[Event], dict]:
+        """把本批事件与近 N 天已发布事件关联：
+
+        - 同一事件、没有新报道（URL 都发布过）→ 不再发布
+        - 同一事件、有新报道 → 标「更新」，引用上一次的报道
+        - 后续进展（同一条故事线上的新事件）→ 引用前序报道，继承故事线 ID
+        候选：共享 URL 直接视为同一事件；否则按向量相似度 + 共同实体取前几个候选交给 LLM 判断。
         """
-        index = self.store.recent_event_index(hours=config.window_hours, exclude_run=run_id)
-        previous = {group['event_key']: group for group in index.values()}
-        previous_leads = self._previous_leads()
-        lead_vectors = self.deps.embed([text for _, text in previous_leads]) if previous_leads else []
+        cc = self.deps.continuity_config
+        history = self.store.recent_events(days=cc.lookback_days, exclude_run=run_id)
+        stats = {'events_unchanged': 0, 'events_updated': 0, 'events_follow_up': 0, 'continuity_judge_calls': 0}
+        if not history or not events:
+            return events, stats
+        url_owner = {a.url: (rid, old) for rid, old in history for a in old.articles}
+        old_vectors = self.deps.embed([_event_text(old) for _, old in history])
+        new_vectors = self.deps.embed([_event_text(e) for e in events])
         kept: list[Event] = []
-        unchanged = 0
-        for event in events:
-            match = next((index[a.url] for a in event.articles if a.url in index), None)
-            if match is None and previous_leads:
-                vector = self.deps.embed([analysis_embedding_text(event.lead, event.lead_analysis)])[0]
-                best = max(range(len(previous_leads)), key=lambda i: cosine(vector, lead_vectors[i]))
-                if cosine(vector, lead_vectors[best]) >= config.high:
-                    match = previous.get(previous_leads[best][0])
+        for event, vector in zip(events, new_vectors):
+            match, relation, reason = None, None, ''
+            owner = next((url_owner[a.url] for a in event.articles if a.url in url_owner), None)
+            if owner:
+                match, relation, reason = owner, Relation.same_event, '共享报道链接'
+            else:
+                entities = _entities(event)
+                scored = []
+                for index, (rid, old) in enumerate(history):
+                    sim = cosine(vector, old_vectors[index])
+                    shared = len(entities & _entities(old))
+                    if sim >= config.low or (shared >= 2 and sim >= config.low - 0.15):
+                        scored.append((sim + 0.03 * shared, sim, rid, old))
+                scored.sort(key=lambda x: x[0], reverse=True)
+                for _, sim, rid, old in scored[: cc.candidates_per_event]:
+                    if sim >= config.high:
+                        match, relation, reason = (rid, old), Relation.same_event, f'相似度 {sim:.2f}'
+                        break
+                    if self.deps.continuity_judge is None or stats['continuity_judge_calls'] >= cc.max_judge_calls:
+                        break
+                    stats['continuity_judge_calls'] += 1
+                    verdict = self.deps.continuity_judge(event, old)
+                    if verdict != Relation.unrelated:
+                        match, relation, reason = (rid, old), verdict, '模型判定'
+                        break
             if match is None:
                 kept.append(event)
-            elif {a.url for a in event.articles} <= match['urls']:
-                unchanged += 1
-            else:
-                event.is_update = True
-                kept.append(event)
-        return kept, unchanged
+                continue
+            rid, old = match
+            if relation == Relation.same_event and {a.url for a in event.articles} <= {a.url for a in old.articles}:
+                stats['events_unchanged'] += 1
+                continue
+            label = 'update' if relation == Relation.same_event else 'follow_up'
+            event.is_update = relation == Relation.same_event
+            event.story_id = old.story_id or old.id
+            chain = [_ref(rid, old, label, reason), *old.previous]
+            seen: set[tuple[int, str]] = set()
+            refs = []
+            for ref in chain:
+                key = (ref.run_id, ref.event_id)
+                if key not in seen:
+                    seen.add(key)
+                    refs.append(ref)
+            event.previous = refs[: cc.max_refs]
+            stats['events_updated' if event.is_update else 'events_follow_up'] += 1
+            kept.append(event)
+        return kept, stats
 
-    def _previous_leads(self) -> list[tuple[str, str]]:
-        run = self.store.latest_completed_run()
-        if not run:
-            return []
-        return [
-            (f"{run['id']}:{event.id}", analysis_embedding_text(event.lead, event.lead_analysis))
-            for event in self.store.load_events(run['id'])
-        ]
+    def _attach_thumbnails(self, events: list[Event]) -> int:
+        if self.deps.thumbnail is None:
+            return 0
+        count = 0
+        for event in events:
+            for article in event.articles:
+                url = choose_image([article.image_url])
+                key = self.deps.thumbnail(url) if url else ''
+                if key:
+                    event.thumbnail = key
+                    count += 1
+                    break
+        return count

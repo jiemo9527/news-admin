@@ -101,3 +101,61 @@ def test_page_title_prefers_h1_and_strips_site_suffix_from_title_tag():
     assert _page_title(people) == '中蒙第二条跨境铁路架梁全部完成'
     assert _page_title(xinhua) == '新闻分析丨美国AI投资潮引发三大风险'
     assert _page_title(column) == '巴黎国际车展折射欧洲车市“中国热”'
+
+
+RSS_WITH_MEDIA = """<?xml version="1.0"?><rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel><title>T</title>
+<item><title>Fed cuts rates</title><link>https://news.test/m</link><description>d</description>
+<pubDate>Fri, 17 Oct 2026 02:00:00 GMT</pubDate>
+<media:thumbnail url="https://img.test/thumb.jpg" width="240"/></item>
+<item><title>Enclosure item</title><link>https://news.test/e</link><description>d</description>
+<pubDate>Fri, 17 Oct 2026 03:00:00 GMT</pubDate>
+<enclosure url="https://img.test/enc.jpg" type="image/jpeg" length="1"/></item>
+</channel></rss>"""
+
+PAGE_WITH_OG = '''<html><head><meta property="og:title" content="T"><meta property="og:image" content="/img/og.jpg">
+<meta property="article:published_time" content="2026-10-17T09:00:00+08:00"><meta property="article:modified_time" content="2026-10-17T11:30:00+08:00"></head>
+<body><article><p>''' + '正文内容足够长。' * 20 + '''</p></article></body></html>'''
+
+PAGE_DATE_ONLY = '''<html><head><title>人民网标题--国际--人民网</title><meta name="publishdate" content="2026-10-17"></head>
+<body><article><p>''' + '正文内容足够长。' * 20 + '''</p></article></body></html>'''
+
+
+def media_handler(request):
+    path = request.url.path
+    if path == '/rss':
+        return httpx.Response(200, text=RSS_WITH_MEDIA)
+    if path in ('/m', '/e'):
+        return httpx.Response(404)
+    if path == '/news/world':
+        return httpx.Response(200, text='<a href="/news/world/story20261017-1">a</a><a href="/news/world/story20261017-2">b</a>')
+    if path == '/news/world/story20261017-1':
+        return httpx.Response(200, text=PAGE_WITH_OG)
+    if path == '/news/world/story20261017-2':
+        return httpx.Response(200, text=PAGE_DATE_ONLY)
+    return httpx.Response(404)
+
+
+def test_rss_media_thumbnail_and_enclosure_become_image_url_with_exact_time():
+    result = fetch_source(Source(id=1, name='R', feed_url='https://news.test/rss'), now=NOW, transport=httpx.MockTransport(media_handler))
+    by_title = {a.title: a for a in result.articles}
+    assert by_title['Fed cuts rates'].image_url == 'https://img.test/thumb.jpg'
+    assert by_title['Enclosure item'].image_url == 'https://img.test/enc.jpg'
+    assert by_title['Fed cuts rates'].time_precision == 'exact'
+
+
+def test_html_page_og_image_modified_time_and_date_only_precision():
+    source = Source(id=2, name='H', feed_url='https://site.test/news/world', kind='html', link_pattern=r'/story\d+')
+    result = fetch_source(source, now=NOW, transport=httpx.MockTransport(media_handler))
+    a1, a2 = sorted(result.articles, key=lambda a: a.url)
+    assert a1.image_url == 'https://site.test/img/og.jpg'
+    assert a1.time_precision == 'exact'
+    assert a1.updated_at == datetime(2026, 10, 17, 3, 30, tzinfo=timezone.utc)
+    assert a2.time_precision == 'date' and a2.published_at.date().isoformat() == '2026-10-17'
+    assert a2.fetched_at is not None
+
+
+def test_cctv_image_and_exact_time():
+    jsonp = 'news({"data":{"list":[{"title":"t","brief":"b","url":"https://news.cctv.com/2026/10/17/ARTIx.shtml","image":"https://p3.img.cctvpic.com/a.jpg","focus_date":"2026-10-17 11:34:13"}]}})'
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, text=jsonp))
+    article = fetch_source(Source(id=3, name='C', feed_url='https://cctv.test/x.jsonp', kind='cctv', fetch_body=False), now=NOW, transport=transport).articles[0]
+    assert article.image_url == 'https://p3.img.cctvpic.com/a.jpg' and article.time_precision == 'exact'

@@ -250,6 +250,25 @@ class Store:
         rows = self._rows('SELECT payload_json FROM events WHERE run_id=? ORDER BY rank', (run_id,))
         return [Event.model_validate_json(r['payload_json']) for r in rows]
 
+    def recent_events(self, days: float = 7, exclude_run: int | None = None) -> list[tuple[int, Event]]:
+        """近 N 天已完成运行中发布的事件，按运行从新到旧；同一故事线只保留最新一次。"""
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rows = self._rows(
+            'SELECT e.run_id, e.payload_json FROM events e JOIN runs r ON r.id=e.run_id '
+            "WHERE r.status='completed' AND r.started_at >= ? AND e.run_id != ? ORDER BY e.run_id DESC, e.rank",
+            (since, exclude_run or -1),
+        )
+        result: list[tuple[int, Event]] = []
+        seen_stories: set[str] = set()
+        for row in rows:
+            event = Event.model_validate_json(row['payload_json'])
+            story = event.story_id or event.id
+            if story in seen_stories:
+                continue
+            seen_stories.add(story)
+            result.append((int(row['run_id']), event))
+        return result
+
     def recent_event_index(self, hours: float = 48, exclude_run: int | None = None) -> dict[str, dict]:
         """近期已发布事件：url → {event_key, sources, urls}，用于跨批次判断新事件 / 更新 / 重复。"""
         since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()

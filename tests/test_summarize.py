@@ -68,7 +68,7 @@ def test_english_number_words_count_as_evidence():
 
 def test_fallback_prefers_chinese_key_facts_that_pass_the_number_check():
     from news_admin.models import ArticleAnalysis
-    an = ArticleAnalysis(title_zh='亚马孙毁林率创新低', region='international', topic='environment', topic_confidence=0.9, is_opinion=False,
+    an = ArticleAnalysis(title_zh='亚马孙毁林率创新低', region='international', topic='environment', topic_confidence=0.9, content_type='news', has_new_development=True,
                          entities=[], key_facts=['毁林率下降50%。', '毁林率下降41.8%，为1988年以来最低。'], event_fingerprint='x', impact=3, impact_reason='r')
     s = fallback_summary(EN, title='亚马孙毁林率创新低', analysis=an)
     assert [x.text for x in s.sentences] == ['毁林率下降41.8%，为1988年以来最低。']

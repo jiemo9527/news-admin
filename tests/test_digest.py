@@ -4,7 +4,7 @@ from news_admin.models import Article, ArticleAnalysis, Event, EventSummary
 
 def ev(id, headline, topic, region='international', score=5.0, update=False, degraded=False, conflicts=()):
     a = Article(id=id, source=f'S{id}', url=f'https://x/{id}', title=headline)
-    an = ArticleAnalysis(title_zh=headline, region=region, topic=topic, topic_confidence=0.9, is_opinion=False, entities=[],
+    an = ArticleAnalysis(title_zh=headline, region=region, topic=topic, topic_confidence=0.9, content_type='news', has_new_development=True, entities=[],
                          key_facts=['f'], event_fingerprint='x', impact=3, impact_reason='r')
     s = EventSummary.model_validate({'headline': headline, 'sentences': [{'text': f'{headline}第一句。', 'sources': [1]}], 'conflicts': list(conflicts)})
     return Event(id=id, articles=[a], analyses={id: an}, summary=s, score=score, is_update=update, summary_degraded=degraded)

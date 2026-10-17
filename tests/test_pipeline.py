@@ -29,7 +29,7 @@ def analysis(article):
     quake = '地震' in article.title
     return ArticleAnalysis(
         title_zh=article.title, region='international', topic='environment' if quake else 'economy', topic_confidence=0.9,
-        is_opinion=False, entities=[], key_facts=['f'], event_fingerprint='x', impact=3 if quake else 5, impact_reason='r',
+        content_type='news', has_new_development=True, entities=[], key_facts=['f'], event_fingerprint='x', impact=3 if quake else 5, impact_reason='r',
     )
 
 
@@ -116,3 +116,59 @@ def test_renamed_source_with_same_urls_is_not_an_update(tmp_path):
     run_id = pipeline.run('manual')
     assert store.load_events(run_id) == []
     assert store.get_run(run_id)['stats']['events_unchanged'] == 2
+
+
+def test_low_value_articles_are_filtered_with_reason(tmp_path):
+    from news_admin.models import ArticleAnalysis
+    fetched = {'A': [article('9', 'A', 'https://a/9', '长江名称历经演变', '长江古称江，历代名称变化。')], **{k: v for k, v in ARTICLES.items() if k != 'A'}}
+    store, pipeline = make_pipeline(tmp_path, fetched=fetched)
+    VECTORS['长江名称历经演变'] = [0.5, 0.5]
+    original = pipeline.deps.analyze
+
+    def analyze(arts):
+        result = original([a for a in arts if a.id != '9'])
+        result['9'] = ArticleAnalysis(title_zh='长江名称历经演变', region='domestic', topic='culture', topic_confidence=0.9,
+                                      content_type='feature', has_new_development=False, entities=['长江'], key_facts=['长江古称江'],
+                                      event_fingerprint='长江|名称演变|-|中国', impact=1, impact_reason='历史科普')
+        return result
+
+    pipeline.deps.analyze = analyze
+    run_id = pipeline.run('manual')
+    stats = store.get_run(run_id)['stats']
+    assert stats['articles_filtered'] == 1
+    assert stats['filtered'][0]['title'] == '长江名称历经演变' and '无新进展' in stats['filtered'][0]['reason']
+    assert all('长江' not in e.summary.headline for e in store.load_events(run_id))
+
+
+def test_follow_up_event_references_previous_story(tmp_path):
+    from news_admin.models import Relation
+    store, pipeline = make_pipeline(tmp_path)
+    first_run = pipeline.run('manual')
+    first_fed = store.load_events(first_run)[0]
+    follow = {'D': [article('7', 'D', 'https://d/7', '美股因降息大涨', '美联储降息后美股三大指数收涨2%。')]}
+    store.seed_sources([{'name': 'D', 'feed_url': 'https://D/rss'}])
+    VECTORS['美股因降息大涨'] = [0.8, 0.6]
+    asked = []
+
+    def judge(new, old):
+        asked.append((new.lead.title, old.lead.title))
+        return Relation.follow_up if '美联储' in old.lead.title else Relation.unrelated
+
+    pipeline.deps.fetch = lambda source: FetchResult(source=source, articles=follow.get(source.name, []))
+    pipeline.deps.continuity_judge = judge
+    run_id = pipeline.run('manual')
+    event = store.load_events(run_id)[0]
+    assert event.is_update is False
+    assert event.previous[0].relation == 'follow_up'
+    assert event.previous[0].run_id == first_run and event.previous[0].event_id == first_fed.id
+    assert event.story_id == first_fed.story_id
+    assert store.get_run(run_id)['stats']['events_follow_up'] == 1
+
+
+def test_thumbnail_uses_first_article_with_usable_image(tmp_path):
+    imgs = {'A': [article('1', 'A', 'https://a/1', '美联储降息25个基点', FED_BODY).model_copy(update={'image_url': 'https://x/logo.png'})],
+            'B': [article('2', 'B', 'https://b/1', '美联储宣布降息', FED_BODY + '更多').model_copy(update={'image_url': 'https://x/photo.jpg'})]}
+    store, pipeline = make_pipeline(tmp_path, fetched=imgs)
+    pipeline.deps.thumbnail = lambda url: 'k' * 32 if url == 'https://x/photo.jpg' else ''
+    events = store.load_events(pipeline.run('manual'))
+    assert events[0].thumbnail == 'k' * 32

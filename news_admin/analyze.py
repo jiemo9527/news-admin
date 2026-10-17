@@ -7,8 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .cluster import Judge
 from .llm import LLMClient, LLMError
-from .models import Article, ArticleAnalysis, SameEventVerdict, Topic
-from .prompts import ANALYZE_SYSTEM, ANALYZE_VERSION, SAME_EVENT_SYSTEM, SAME_EVENT_VERSION, analyze_user, same_event_user
+from .models import Article, ArticleAnalysis, ContinuityVerdict, Event, Relation, SameEventVerdict, Topic
+from .prompts import (
+    ANALYZE_SYSTEM, ANALYZE_VERSION, CONTINUITY_SYSTEM, CONTINUITY_VERSION, SAME_EVENT_SYSTEM, SAME_EVENT_VERSION,
+    analyze_user, continuity_user, same_event_user,
+)
 
 log = logging.getLogger(__name__)
 
@@ -39,5 +42,18 @@ def make_judge(client: LLMClient, analyses: dict[str, ArticleAnalysis]) -> Judge
         except LLMError:
             return False
         return verdict.same_event
+
+    return judge
+
+
+def make_continuity_judge(client: LLMClient):
+    def judge(new: Event, old: Event) -> Relation:
+        try:
+            return client.structured(
+                CONTINUITY_SYSTEM, continuity_user(new, old), ContinuityVerdict,
+                stage='continuity', prompt_version=CONTINUITY_VERSION,
+            ).value.relation
+        except LLMError:
+            return Relation.unrelated
 
     return judge

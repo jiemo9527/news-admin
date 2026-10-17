@@ -8,13 +8,18 @@
   <h2>{{ section.title }}</h2>
   {% for event in section.events %}
   {% set s = event.summary %}
-  <article class="event">
+  <article id="e-{{ event.id }}" class="event{% if event.thumbnail %} has-thumb{% endif %}">
+    {% if event.thumbnail %}<img class="thumb" src="/thumb/{{ event.thumbnail }}" alt="" loading="lazy" width="160" height="107">{% endif %}
+    <div class="event-body">
     <h3>
       {% if event.is_update %}<span class="tag update">更新</span>{% endif %}
       {{ s.headline if s else event.lead.title }}
     </h3>
     <div class="meta">
       {% if event.lead_analysis %}<span class="tag">{{ region_label(event) }}</span><span class="tag">{{ topic_labels[event.lead_analysis.topic] }}</span>{% endif %}
+      {% set first = event.first_published %}
+      <span class="time" title="最早报道时间（北京时间）">{{ format_time(first.published_at, first.time_precision) if first else '发布时间未知' }}</span>
+      {% if event.last_updated and first and event.last_updated > first.published_at and first.time_precision == 'exact' %}<span class="time">最新更新 {{ format_time(event.last_updated, 'exact') }}</span>{% endif %}
       <span>{{ event.sources | length }} 个来源</span>
       {% if event.summary_degraded %}<span class="tag warn" title="模型摘要未通过事实校验，已降级为来源原文导语">原文导语</span>{% endif %}
     </div>
@@ -24,12 +29,24 @@
     </p>
     {% for conflict in s.conflicts %}<p class="conflict">说法不一：{{ conflict }}</p>{% endfor %}
     {% endif %}
+    {% if event.previous %}
+    <div class="previous">
+      <span class="label">{{ '此前报道' if event.previous[0].relation == 'update' else '前情' }}</span>
+      <ul>
+      {% for ref in event.previous %}
+        <li><a href="/briefs/{{ ref.run_id }}#e-{{ ref.event_id }}">{{ ref.headline }}</a> <span class="muted">{{ format_time(ref.published_at, ref.time_precision) }}</span></li>
+      {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
     <ol class="refs">
       {% for article in event.articles %}
       <li id="{{ event.id }}-{{ loop.index }}"><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.source }}｜{{ article.title }}</a>
+        <span class="muted">{{ format_time(article.published_at, article.time_precision) }}</span>
         {% if article.duplicate_sources %}<span class="dup">（另有 {{ article.duplicate_sources | join('、') }} 转载）</span>{% endif %}</li>
       {% endfor %}
     </ol>
+    </div>
   </article>
   {% endfor %}
 </section>

@@ -5,12 +5,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from .analyze import analyze_articles, make_judge
+from .analyze import analyze_articles, make_continuity_judge, make_judge
 from .cluster import ClusterConfig
 from .config import Settings, get_settings
 from .digest import render_text
 from .embeddings import EmbeddingClient, HashingEmbedder
 from .fetch import fetch_source
+from .filtering import FilterConfig
+from .images import ThumbnailCache
 from .llm import LLMClient, LLMSettings
 from .pipeline import Pipeline, PipelineDeps
 from .push import send
@@ -27,6 +29,7 @@ class Runtime:
     store: Store
     llm: LLMClient
     embedder: EmbeddingClient | HashingEmbedder
+    thumbnails: ThumbnailCache
     pipeline: Pipeline = field(init=False)
 
     def __post_init__(self) -> None:
@@ -38,6 +41,9 @@ class Runtime:
             judge_factory=lambda analyses: make_judge(self.llm, analyses),
             summarize=lambda articles, title, analysis: summarize_event(self.llm, articles, title, analysis),
             llm_calls=lambda: self.llm.calls,
+            continuity_judge=make_continuity_judge(self.llm),
+            thumbnail=self.thumbnails.fetch,
+            filter_config=FilterConfig(min_impact=s.min_impact, drop_opinion=s.drop_opinion),
             cluster_config=self.cluster_config(),
             max_events=s.max_events,
         )
@@ -100,4 +106,4 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
     else:
         log.warning('未配置 NEWS_EMBEDDING_API_KEY，使用字符哈希向量降级，跨语言聚类效果会变差')
         embedder = HashingEmbedder()
-    return Runtime(settings=settings, store=store, llm=llm, embedder=embedder)
+    return Runtime(settings=settings, store=store, llm=llm, embedder=embedder, thumbnails=ThumbnailCache(settings.data_dir / 'thumbs'))

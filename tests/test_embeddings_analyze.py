@@ -9,7 +9,7 @@ from news_admin.models import Article
 
 ANALYSIS = {
     'title_zh': '美联储降息25个基点', 'region': 'international', 'topic': 'economy', 'topic_confidence': 0.4,
-    'is_opinion': False, 'entities': ['美联储'], 'key_facts': ['美联储宣布降息25个基点'],
+    'content_type': 'news', 'has_new_development': True, 'entities': ['美联储'], 'key_facts': ['美联储宣布降息25个基点'],
     'event_fingerprint': '美联储|降息|利率|美国', 'impact': 5, 'impact_reason': '影响全球市场',
 }
 

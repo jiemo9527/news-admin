@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .models import REGION_LABELS, TOPIC_LABELS, Event, Topic
+from .timefmt import format_time
 
 
 @dataclass
@@ -38,10 +39,16 @@ def build_sections(events: list[Event], top_n: int = 5) -> list[Section]:
 def event_text(event: Event) -> str:
     summary = event.summary
     headline = summary.headline if summary else event.lead.title
-    lines = [('【更新】' if event.is_update else '') + headline]
+    tag = '【更新】' if event.is_update else ('【后续】' if event.previous else '')
+    first = event.first_published
+    when = format_time(first.published_at, first.time_precision) if first else '发布时间未知'
+    lines = [f'{tag}{headline}（{when}）']
     if summary:
         lines.append(''.join(s.text for s in summary.sentences))
         lines.extend(f'说法不一：{c}' for c in summary.conflicts)
+    if event.previous:
+        ref = event.previous[0]
+        lines.append(f'前情：{ref.headline}（{format_time(ref.published_at, ref.time_precision)}）')
     lines.append('来源：' + '、'.join(event.sources))
     return '\n'.join(lines)
 

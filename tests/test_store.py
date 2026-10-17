@@ -5,7 +5,7 @@ from news_admin.store import Store
 
 
 def analysis(fp='美联储|降息|利率|美国'):
-    return ArticleAnalysis(title_zh='美联储降息', region='international', topic='economy', topic_confidence=0.9, is_opinion=False,
+    return ArticleAnalysis(title_zh='美联储降息', region='international', topic='economy', topic_confidence=0.9, content_type='news', has_new_development=True,
                            entities=['美联储'], key_facts=['降息25个基点'], event_fingerprint=fp, impact=4, impact_reason='r')
 
 
@@ -70,3 +70,38 @@ def test_source_kind_and_link_pattern_persist_and_old_db_is_migrated(tmp_path):
     assert (zb.kind, zb.link_pattern) == ('html', r'/story\d+')
     store.upsert_source(zb.id, '早报', 'https://z/world', 1.0, 10, True, kind='html', link_pattern=r'/x\d+')
     assert [s for s in store.list_sources() if s.name == '早报'][0].link_pattern == r'/x\d+'
+
+
+def test_events_saved_with_v1_analysis_schema_still_load(tmp_path):
+    import json
+    store = Store(tmp_path / 'n.db')
+    run_id = store.start_run('manual')
+    store.save_events(run_id, [make_event()])
+    store.finish_run(run_id, 'completed', {})
+    with store._conn() as conn:
+        payload = json.loads(conn.execute('SELECT payload_json FROM events').fetchone()[0])
+        for a in payload['analyses'].values():
+            a.pop('content_type'); a.pop('has_new_development'); a['is_opinion'] = True
+        conn.execute('UPDATE events SET payload_json=?', (json.dumps(payload),))
+    event = store.load_events(run_id)[0]
+    assert event.lead_analysis.content_type.value == 'opinion'
+    assert event.lead_analysis.has_new_development is True
+    assert store.recent_events(days=7)[0][1].id == event.id
+
+
+def test_legacy_article_without_precision_is_treated_as_date_only():
+    from news_admin.models import Article
+    from datetime import datetime, timezone
+    legacy = Article.model_validate({'id': 'a', 'source': 's', 'url': 'u', 'title': 't', 'published_at': '2026-10-17T04:00:00+00:00'})
+    assert legacy.time_precision == 'date'
+    fresh = Article(id='a', source='s', url='u', title='t', published_at=datetime.now(timezone.utc), time_precision='exact')
+    assert fresh.time_precision == 'exact'
+    assert Article(id='a', source='s', url='u', title='t').time_precision == 'none'
+
+
+def test_event_ref_with_timestamp_but_unknown_precision_shows_date():
+    from datetime import datetime, timezone
+    from news_admin.models import EventRef
+    ref = EventRef(run_id=1, event_id='e', headline='h', published_at=datetime(2026, 10, 17, tzinfo=timezone.utc), time_precision='none', relation='update')
+    assert ref.time_precision == 'date'
+    assert EventRef(run_id=1, event_id='e', headline='h', relation='update').time_precision == 'none'

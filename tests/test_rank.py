@@ -8,7 +8,7 @@ NOW = datetime(2026, 10, 17, 12)
 
 def analysis(impact, opinion=False):
     return ArticleAnalysis(
-        title_zh='t', region='domestic', topic='economy', topic_confidence=0.9, is_opinion=opinion,
+        title_zh='t', region='domestic', topic='economy', topic_confidence=0.9, content_type='opinion' if opinion else 'news', has_new_development=True,
         entities=[], key_facts=['f'], event_fingerprint='a|b|c|d', impact=impact, impact_reason='r',
     )
 

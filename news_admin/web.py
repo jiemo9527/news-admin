@@ -13,7 +13,7 @@ from typing import Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -24,9 +24,10 @@ from .models import TOPIC_LABELS
 from .pipeline import PipelineBusy
 from .push import CHANNEL_KINDS
 from .runtime import Runtime, build_runtime
+from .timefmt import format_time
 
 BASE = Path(__file__).resolve().parent
-PUBLIC_PREFIXES = ('/briefs', '/static', '/login', '/healthz')
+PUBLIC_PREFIXES = ('/briefs', '/static', '/login', '/healthz', '/thumb/')
 
 
 def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> FastAPI:
@@ -55,7 +56,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
 
     app = FastAPI(title='News Admin', docs_url=None, redoc_url=None, lifespan=lifespan)
     templates = Jinja2Templates(directory=str(BASE / 'templates'))
-    templates.env.globals.update(source_kinds=SOURCE_KINDS, topic_labels=TOPIC_LABELS, region_label=event_region_label, channel_kinds=CHANNEL_KINDS)
+    templates.env.globals.update(format_time=format_time, source_kinds=SOURCE_KINDS, topic_labels=TOPIC_LABELS, region_label=event_region_label, channel_kinds=CHANNEL_KINDS)
     app.mount('/static', StaticFiles(directory=str(BASE / 'static')), name='static')
 
     def run_in_background(trigger: str) -> bool:
@@ -116,6 +117,14 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             raise HTTPException(404)
         events = rt.store.load_events(run_id)
         return page(request, 'brief.html', run=run, sections=build_sections(events))
+
+    @app.get('/thumb/{key}')
+    def thumb(key: str):
+        found = rt.thumbnails.read(key)
+        if not found:
+            raise HTTPException(404)
+        data, mime = found
+        return Response(data, media_type=mime, headers={'Cache-Control': 'public, max-age=604800, immutable'})
 
     @app.get('/login', response_class=HTMLResponse)
     def login_form(request: Request, next: str = '/admin'):

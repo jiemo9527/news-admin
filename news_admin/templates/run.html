@@ -6,7 +6,7 @@
   <div class="card">
     <h2>流水线</h2>
     <table class="kv">
-      {% for key, label in [('articles_fetched','抓取文章'),('articles_after_dedupe','去重后'),('articles_analyzed','分析成功'),('clusters','聚类事件'),('events_unchanged','与上批重复（未发布）'),('events_published','发布事件'),('summaries_degraded','降级摘要')] %}
+      {% for key, label in [('articles_fetched','抓取文章'),('articles_after_dedupe','去重后'),('articles_analyzed','分析成功'),('articles_filtered','价值过滤'),('clusters','聚类事件'),('events_unchanged','与此前重复（未发布）'),('events_updated','同一事件更新'),('events_follow_up','后续进展'),('events_with_thumbnail','有配图'),('events_published','发布事件'),('summaries_degraded','降级摘要')] %}
       <tr><th>{{ label }}</th><td>{{ run.stats.get(key, '-') }}</td></tr>
       {% endfor %}
     </table>
@@ -30,6 +30,12 @@
 <table>
   {% for d in deliveries %}<tr><td>{{ d.name }}</td><td class="status {{ d.status }}">{{ d.status }}</td><td>{{ d.created_at[:16] }}</td><td class="error">{{ d.error }}</td></tr>{% else %}<tr><td>尚未推送</td></tr>{% endfor %}
 </table>
+<details class="card"><summary>被过滤的文章（{{ run.stats.get('articles_filtered', 0) }}）</summary>
+<table>
+  <thead><tr><th>来源</th><th>标题</th><th>原因</th></tr></thead>
+  {% for f in run.stats.get('filtered', []) %}<tr><td>{{ f.source }}</td><td><a href="{{ f.url }}" target="_blank" rel="noopener noreferrer">{{ f.title }}</a></td><td>{{ f.reason }}</td></tr>{% endfor %}
+</table>
+</details>
 <h2>事件</h2>
 <table>
   <thead><tr><th>#</th><th>分数</th><th>标题</th><th>主题</th><th>影响力</th><th>来源</th></tr></thead>

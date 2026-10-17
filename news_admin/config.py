@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     cluster_low: float | None = None
     cluster_window_hours: float = 48
     min_topic_confidence: float = 0.5
+    # 价值过滤：影响力低于该值的文章不进入简报；drop_opinion=true 时评论文章全部不收录
+    min_impact: int = 2
+    drop_opinion: bool = False
     max_events: int = 30
 
     admin_username: str = 'admin'
