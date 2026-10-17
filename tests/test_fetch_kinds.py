@@ -159,3 +159,21 @@ def test_cctv_image_and_exact_time():
     transport = httpx.MockTransport(lambda r: httpx.Response(200, text=jsonp))
     article = fetch_source(Source(id=3, name='C', feed_url='https://cctv.test/x.jsonp', kind='cctv', fetch_body=False), now=NOW, transport=transport).articles[0]
     assert article.image_url == 'https://p3.img.cctvpic.com/a.jpg' and article.time_precision == 'exact'
+
+
+
+GOOGLE_NEWS = """<?xml version="1.0"?><rss version="2.0"><channel><title>site:apnews.com</title>
+<item><title>Trump puts new Russia sanctions on hold - AP News</title>
+<link>https://news.google.com/rss/articles/CBMiAAA?oc=5</link>
+<description>&lt;a href="https://news.google.com/rss/articles/CBMiAAA?oc=5"&gt;Trump puts new Russia sanctions on hold&lt;/a&gt;&amp;nbsp;&amp;nbsp;&lt;font color="#6f6f6f"&gt;AP News&lt;/font&gt;</description>
+<pubDate>Sat, 17 Oct 2026 03:18:00 GMT</pubDate><source url="https://apnews.com">AP News</source></item>
+</channel></rss>"""
+
+
+def test_google_news_feed_strips_publisher_suffix_and_link_only_description():
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, text=GOOGLE_NEWS))
+    source = Source(id=9, name='美联社', feed_url='https://news.google.com/rss/search?q=site:apnews.com', fetch_body=False)
+    article = fetch_source(source, now=NOW, transport=transport).articles[0]
+    assert article.title == 'Trump puts new Russia sanctions on hold'
+    assert article.body == ''
+    assert article.time_precision == 'exact'

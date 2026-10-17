@@ -12,7 +12,7 @@ v1 原配置的变化：
 - 纽约时报、BBC、RT：RSS
 """
 
-ORIGINAL_SOURCES = [
+ORIGINAL_SOURCES = [  # max_items 默认 10
     {'name': '路透社', 'kind': 'jsonfeed', 'feed_url': 'https://reutersnew.buzzing.cc/zh-Hant/lite/feed.json', 'weight': 1.2},
     {'name': 'BBC', 'kind': 'rss', 'feed_url': 'https://feeds.bbci.co.uk/news/world/rss.xml', 'weight': 1.1},
     {'name': '纽约时报', 'kind': 'rss', 'feed_url': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml', 'weight': 1.1},
@@ -26,7 +26,20 @@ ORIGINAL_SOURCES = [
 ]
 
 # 推荐来源：后台「新闻来源 → 推荐来源」一键添加。note 为 2026-10-17 实测结论。
+# 美联社、法新社官网对程序访问返回 403/无 RSS，经 Google 新闻按站点聚合（只有标题和时间，无正文，正文页也不可抓）。
 EXTRA_SOURCES = [
+    {'name': '彭博社', 'kind': 'jsonfeed', 'feed_url': 'https://bbg.buzzing.cc/lite/feed.json', 'weight': 1.2, 'fetch_body': False,
+     'note': '彭博全站新闻（buzzing.cc 中文翻译标题 + 英文原题），付费墙不抓正文。推荐'},
+    {'name': '华尔街日报', 'kind': 'rss', 'feed_url': 'https://feeds.content.dowjones.io/public/rss/RSSWorldNews', 'weight': 1.2, 'fetch_body': False,
+     'note': '道琼斯官方国际新闻 RSS，带一句导语；付费墙不抓正文。推荐'},
+    {'name': '华尔街日报·市场', 'kind': 'rss', 'feed_url': 'https://feeds.content.dowjones.io/public/rss/RSSMarketsMain', 'weight': 1.1, 'fetch_body': False,
+     'note': '道琼斯官方市场/金融 RSS。按需'},
+    {'name': '美联社', 'kind': 'rss', 'feed_url': 'https://news.google.com/rss/search?q=when:1d+site:apnews.com&hl=en-US&gl=US&ceid=US:en',
+     'weight': 1.2, 'fetch_body': False,
+     'note': '官网屏蔽程序访问，经 Google 新闻聚合 apnews.com，只有标题，摘要靠模型依据标题。可选'},
+    {'name': '法新社', 'kind': 'rss', 'feed_url': 'https://news.google.com/rss/search?q=when:1d+site:afp.com&hl=en-US&gl=US&ceid=US:en',
+     'weight': 1.1, 'fetch_body': False,
+     'note': '官网无公开 RSS，经 Google 新闻聚合 afp.com，只有标题。可选'},
     {'name': '法广中文', 'kind': 'rss', 'feed_url': 'https://www.rfi.fr/cn/rss', 'weight': 1.0,
      'note': '简体中文，国际/中国/欧洲时政，更新频繁（每次约 30 条）。推荐开启'},
     {'name': '中新网·国际', 'kind': 'rss', 'feed_url': 'https://www.chinanews.com.cn/rss/world.xml', 'weight': 1.0,

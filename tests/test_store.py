@@ -114,3 +114,11 @@ def test_timestamps_are_beijing_time_and_old_utc_rows_are_migrated(tmp_path):
     with store._conn() as conn:
         conn.execute("UPDATE runs SET started_at='2026-10-17T04:00:00+00:00'")
     assert Store(tmp_path / 'n.db').get_run(run_id)['started_at'] == '2026-10-17T12:00:00+08:00'
+
+
+
+def test_preset_keeps_fetch_body_and_item_count(tmp_path):
+    store = Store(tmp_path / 'n.db')
+    store.add_preset_source({'name': '彭博社', 'kind': 'jsonfeed', 'feed_url': 'https://bbg.test/feed.json', 'fetch_body': False, 'max_items': 10})
+    s = store.list_sources()[0]
+    assert (s.name, s.fetch_body, s.max_items, s.enabled) == ('彭博社', False, 10, True)

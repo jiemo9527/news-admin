@@ -103,10 +103,18 @@ def _list_rss(client: httpx.Client, source: Source) -> list[_Entry]:
     entries = []
     for entry in feedparser.parse(response.content).entries:
         parsed = entry.get('published_parsed') or entry.get('updated_parsed')
+        title = clean_text(entry.get('title', ''))
+        summary = _html_to_text(entry.get('summary', '') or entry.get('description', ''))
+        publisher = clean_text((entry.get('source') or {}).get('title', ''))
+        if publisher and title.endswith(f' - {publisher}'):
+            # Google 新闻聚合：标题带「 - 媒体名」后缀，描述只是标题链接，没有正文
+            title = title[: -len(publisher) - 3].strip()
+            if summary.replace(publisher, '').strip() in (title, ''):
+                summary = ''
         entries.append(_Entry(
             url=entry.get('link', ''),
-            title=clean_text(entry.get('title', '')),
-            summary=_html_to_text(entry.get('summary', '') or entry.get('description', '')),
+            title=title,
+            summary=summary,
             published=datetime(*parsed[:6], tzinfo=timezone.utc) if parsed else None,
             precision='exact' if parsed else 'none',
             image=_rss_image(entry),

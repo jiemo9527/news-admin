@@ -199,8 +199,9 @@ class Store:
                 if s['feed_url'] in removed:
                     continue
                 conn.execute(
-                    'INSERT OR IGNORE INTO sources(name, feed_url, weight, kind, link_pattern, max_items) VALUES (?, ?, ?, ?, ?, ?)',
-                    (s['name'], s['feed_url'], s.get('weight', 1.0), s.get('kind', 'rss'), s.get('link_pattern', ''), s.get('max_items', 20)),
+                    'INSERT OR IGNORE INTO sources(name, feed_url, weight, kind, link_pattern, max_items, fetch_body) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (s['name'], s['feed_url'], s.get('weight', 1.0), s.get('kind', 'rss'), s.get('link_pattern', ''), s.get('max_items', 10),
+                     int(s.get('fetch_body', True))),
                 )
 
     def list_sources(self, enabled_only: bool = False) -> list[Source]:
@@ -247,10 +248,10 @@ class Store:
         self.set_setting('removed_sources', json.dumps(sorted(removed)))
         with self._conn() as conn:
             conn.execute(
-                'INSERT INTO sources(name, feed_url, weight, kind, link_pattern, max_items, enabled) VALUES (?,?,?,?,?,?,1) '
+                'INSERT INTO sources(name, feed_url, weight, kind, link_pattern, max_items, fetch_body, enabled) VALUES (?,?,?,?,?,?,?,1) '
                 'ON CONFLICT(feed_url) DO UPDATE SET enabled=1',
                 (preset['name'], preset['feed_url'], preset.get('weight', 1.0), preset.get('kind', 'rss'),
-                 preset.get('link_pattern', ''), preset.get('max_items', 6)),
+                 preset.get('link_pattern', ''), preset.get('max_items', 10), int(preset.get('fetch_body', True))),
             )
 
     def delete_run(self, run_id: int) -> bool:
