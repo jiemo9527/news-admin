@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from .digest import build_sections, event_region_label
+from .fetch import SOURCE_KINDS
 from .models import TOPIC_LABELS
 from .pipeline import PipelineBusy
 from .push import CHANNEL_KINDS
@@ -53,7 +55,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
 
     app = FastAPI(title='News Admin', docs_url=None, redoc_url=None, lifespan=lifespan)
     templates = Jinja2Templates(directory=str(BASE / 'templates'))
-    templates.env.globals.update(topic_labels=TOPIC_LABELS, region_label=event_region_label, channel_kinds=CHANNEL_KINDS)
+    templates.env.globals.update(source_kinds=SOURCE_KINDS, topic_labels=TOPIC_LABELS, region_label=event_region_label, channel_kinds=CHANNEL_KINDS)
     app.mount('/static', StaticFiles(directory=str(BASE / 'static')), name='static')
 
     def run_in_background(trigger: str) -> bool:
@@ -180,8 +182,20 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     def save_source(
         request: Request, name: str = Form(...), feed_url: str = Form(...), weight: float = Form(1.0),
         max_items: int = Form(20), fetch_body: str = Form('0'), source_id: int | None = Form(None),
+        kind: str = Form('rss'), link_pattern: str = Form(''),
     ):
-        rt.store.upsert_source(source_id, name.strip(), feed_url.strip(), weight, max_items, fetch_body == '1')
+        if kind not in SOURCE_KINDS:
+            raise HTTPException(400)
+        if kind == 'html':
+            try:
+                re.compile(link_pattern)
+            except re.error as exc:
+                flash(request, f'链接正则无效：{exc}')
+                return RedirectResponse('/admin/sources', status_code=303)
+            if not link_pattern.strip():
+                flash(request, '网页列表源必须填写文章链接正则')
+                return RedirectResponse('/admin/sources', status_code=303)
+        rt.store.upsert_source(source_id, name.strip(), feed_url.strip(), weight, max_items, fetch_body == '1', kind, link_pattern.strip())
         flash(request, '来源已保存')
         return RedirectResponse('/admin/sources', status_code=303)
 

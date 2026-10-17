@@ -105,3 +105,14 @@ def test_clustering_embeds_normalized_analysis_text_not_raw_text(tmp_path):
     text = analysis_embedding_text(a, analysis(a))
     assert text.startswith('Fed cuts rates') and 'x' in text
     assert analysis_embedding_text(a, None).startswith('Fed cuts rates\nThe Fed')
+
+
+def test_renamed_source_with_same_urls_is_not_an_update(tmp_path):
+    store, pipeline = make_pipeline(tmp_path)
+    pipeline.run('manual')
+    renamed = {'A2': [a.model_copy(update={'source': 'A2'}) for a in ARTICLES['A']], 'B': ARTICLES['B'], 'C': ARTICLES['C']}
+    store.seed_sources([{'name': 'A2', 'feed_url': 'https://A2/rss'}])
+    pipeline.deps.fetch = lambda source: FetchResult(source=source, articles=renamed.get(source.name, []))
+    run_id = pipeline.run('manual')
+    assert store.load_events(run_id) == []
+    assert store.get_run(run_id)['stats']['events_unchanged'] == 2

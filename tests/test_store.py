@@ -54,3 +54,19 @@ def test_llm_calls_are_recorded_and_aggregated(tmp_path):
                                     LLMCall('analyze', 'm', 'v', 'h2', cached=True)])
     stats = store.llm_stats(run_id)
     assert stats['analyze'] == {'calls': 2, 'cached': 1, 'prompt_tokens': 100, 'completion_tokens': 20, 'retries': 0, 'errors': 0}
+
+
+def test_source_kind_and_link_pattern_persist_and_old_db_is_migrated(tmp_path):
+    import sqlite3
+    path = tmp_path / 'old.db'
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, feed_url TEXT NOT NULL UNIQUE, weight REAL NOT NULL DEFAULT 1.0, max_items INTEGER NOT NULL DEFAULT 20, fetch_body INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, last_ok_at TEXT, last_error TEXT NOT NULL DEFAULT '', consecutive_failures INTEGER NOT NULL DEFAULT 0)")
+    conn.execute("INSERT INTO sources(name, feed_url) VALUES ('A', 'https://a/rss')")
+    conn.commit(); conn.close()
+    store = Store(path)
+    assert store.list_sources()[0].kind == 'rss'
+    store.seed_sources([{'name': '早报', 'feed_url': 'https://z/world', 'kind': 'html', 'link_pattern': r'/story\d+'}])
+    zb = [s for s in store.list_sources() if s.name == '早报'][0]
+    assert (zb.kind, zb.link_pattern) == ('html', r'/story\d+')
+    store.upsert_source(zb.id, '早报', 'https://z/world', 1.0, 10, True, kind='html', link_pattern=r'/x\d+')
+    assert [s for s in store.list_sources() if s.name == '早报'][0].link_pattern == r'/x\d+'

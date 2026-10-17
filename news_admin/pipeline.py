@@ -144,8 +144,9 @@ class Pipeline:
 
     def _compare_with_history(self, run_id: int, events: list[Event], config: ClusterConfig) -> tuple[list[Event], int]:
         """与近 48 小时已发布事件比对：
-        - 命中旧事件且没有新来源 → 丢弃（不重复推送）
-        - 命中旧事件且有新来源 → 标记为更新
+        - 命中旧事件且所有报道都已发布过 → 丢弃（不重复推送）
+        - 命中旧事件且出现新的报道（新 URL）→ 标记为更新
+        用 URL 而不是来源名判断，来源改名不会被误判为更新。
         命中方式：共享 URL，或主报道向量相似度 ≥ 高阈值。
         """
         index = self.store.recent_event_index(hours=config.window_hours, exclude_run=run_id)
@@ -163,7 +164,7 @@ class Pipeline:
                     match = previous.get(previous_leads[best][0])
             if match is None:
                 kept.append(event)
-            elif set(event.sources) <= match['sources']:
+            elif {a.url for a in event.articles} <= match['urls']:
                 unchanged += 1
             else:
                 event.is_update = True

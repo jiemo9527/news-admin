@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS sources (
     max_items INTEGER NOT NULL DEFAULT 20,
     fetch_body INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1,
+    kind TEXT NOT NULL DEFAULT 'rss',
+    link_pattern TEXT NOT NULL DEFAULT '',
     last_ok_at TEXT,
     last_error TEXT NOT NULL DEFAULT '',
     consecutive_failures INTEGER NOT NULL DEFAULT 0
@@ -105,6 +107,11 @@ class Store:
         self.path = path
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            columns = {row[1] for row in conn.execute('PRAGMA table_info(sources)')}
+            if 'kind' not in columns:
+                conn.execute("ALTER TABLE sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'rss'")
+            if 'link_pattern' not in columns:
+                conn.execute("ALTER TABLE sources ADD COLUMN link_pattern TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def _conn(self):
@@ -127,8 +134,8 @@ class Store:
         with self._conn() as conn:
             for s in sources:
                 conn.execute(
-                    'INSERT OR IGNORE INTO sources(name, feed_url, weight) VALUES (?, ?, ?)',
-                    (s['name'], s['feed_url'], s.get('weight', 1.0)),
+                    'INSERT OR IGNORE INTO sources(name, feed_url, weight, kind, link_pattern, max_items) VALUES (?, ?, ?, ?, ?, ?)',
+                    (s['name'], s['feed_url'], s.get('weight', 1.0), s.get('kind', 'rss'), s.get('link_pattern', ''), s.get('max_items', 20)),
                 )
 
     def list_sources(self, enabled_only: bool = False) -> list[Source]:
@@ -137,6 +144,7 @@ class Store:
             Source(
                 id=r['id'], name=r['name'], feed_url=r['feed_url'], weight=r['weight'],
                 max_items=r['max_items'], fetch_body=bool(r['fetch_body']), enabled=bool(r['enabled']),
+                kind=r['kind'], link_pattern=r['link_pattern'],
             )
             for r in self._rows(sql)
         ]
@@ -144,17 +152,21 @@ class Store:
     def source_health(self) -> dict[int, dict[str, Any]]:
         return {r['id']: r for r in self._rows('SELECT id, last_ok_at, last_error, consecutive_failures FROM sources')}
 
-    def upsert_source(self, source_id: int | None, name: str, feed_url: str, weight: float, max_items: int, fetch_body: bool) -> None:
+    def upsert_source(
+        self, source_id: int | None, name: str, feed_url: str, weight: float, max_items: int, fetch_body: bool,
+        kind: str = 'rss', link_pattern: str = '',
+    ) -> None:
+        values = (name, feed_url, weight, max_items, int(fetch_body), kind, link_pattern)
         with self._conn() as conn:
             if source_id:
                 conn.execute(
-                    'UPDATE sources SET name=?, feed_url=?, weight=?, max_items=?, fetch_body=? WHERE id=?',
-                    (name, feed_url, weight, max_items, int(fetch_body), source_id),
+                    'UPDATE sources SET name=?, feed_url=?, weight=?, max_items=?, fetch_body=?, kind=?, link_pattern=? WHERE id=?',
+                    (*values, source_id),
                 )
             else:
                 conn.execute(
-                    'INSERT INTO sources(name, feed_url, weight, max_items, fetch_body) VALUES (?,?,?,?,?)',
-                    (name, feed_url, weight, max_items, int(fetch_body)),
+                    'INSERT INTO sources(name, feed_url, weight, max_items, fetch_body, kind, link_pattern) VALUES (?,?,?,?,?,?,?)',
+                    values,
                 )
 
     def delete_source(self, source_id: int) -> None:

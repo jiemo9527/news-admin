@@ -74,3 +74,15 @@ def test_cluster_thresholds_follow_embedder(tmp_path):
     assert (real.cluster_config().high, real.cluster_config().low) == (0.86, 0.72)
     override = build_runtime(Settings(data_dir=tmp_path / 'c', cluster_low=0.5, _env_file=None))
     assert override.cluster_config().low == 0.5
+
+
+def test_html_source_requires_valid_link_pattern(tmp_path):
+    rt, client = make_client(tmp_path)
+    client.post('/login', data={'username': 'admin', 'password': 'pw'})
+    before = len(rt.store.list_sources())
+    client.post('/admin/sources', data={'name': 'x', 'feed_url': 'https://x.test/', 'kind': 'html', 'link_pattern': ''})
+    client.post('/admin/sources', data={'name': 'y', 'feed_url': 'https://y.test/', 'kind': 'html', 'link_pattern': '(['})
+    assert len(rt.store.list_sources()) == before
+    client.post('/admin/sources', data={'name': 'z', 'feed_url': 'https://z.test/', 'kind': 'html', 'link_pattern': r'/story\d+'})
+    z = [s for s in rt.store.list_sources() if s.name == 'z'][0]
+    assert z.kind == 'html' and z.link_pattern == r'/story\d+'

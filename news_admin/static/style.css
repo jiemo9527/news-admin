@@ -30,7 +30,7 @@ form.inline { display: inline; }
 form.stack { display: grid; gap: 10px; max-width: 520px; }
 form.stack label { display: grid; gap: 4px; }
 form.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-input:not([type=checkbox]) { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+input:not([type=checkbox]), select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
 button { padding: 6px 14px; border: 0; border-radius: 6px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.link { background: none; color: var(--accent); padding: 0; }
