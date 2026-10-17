@@ -72,6 +72,18 @@ class ThumbnailCache:
         path.write_bytes(buffer.getvalue())
         return key
 
+    def prune(self, retention_days: int = 90) -> int:
+        """删除超过保留期的缩略图与失败记录。"""
+        import time
+
+        cutoff = time.time() - retention_days * 86400
+        removed = 0
+        for path in self.directory.iterdir():
+            if path.suffix in ('.webp', '.miss') and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+                removed += int(path.suffix == '.webp')
+        return removed
+
     def read(self, key: str) -> tuple[bytes, str] | None:
         if not _KEY_RE.match(key or ''):
             return None

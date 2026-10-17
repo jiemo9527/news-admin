@@ -26,6 +26,7 @@ import httpx
 import trafilatura
 from bs4 import BeautifulSoup
 
+from . import tz
 from .models import Article
 from .normalize import canonical_url, clean_text
 
@@ -282,10 +283,12 @@ def _fetch_page(client: httpx.Client, url: str) -> _Page:
 
 
 def fetch_source(
-    source: Source, now: datetime | None = None, max_age: timedelta = timedelta(hours=36),
+    source: Source, now: datetime | None = None, since: datetime | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> FetchResult:
-    now = now or datetime.now(timezone.utc)
+    """抓取一个来源。since 为时间窗起点（默认昨天 0 点，北京时间），更早的条目丢弃。"""
+    now = tz.to_local(now) if now else tz.now()
+    since = since or tz.fetch_since('today_yesterday', now)
     result = FetchResult(source=source)
     lister = LISTERS.get(source.kind)
     if lister is None:
@@ -300,7 +303,7 @@ def fetch_source(
             return result
 
         def fresh(entry: _Entry) -> bool:
-            return entry.published is None or now - entry.published <= max_age
+            return entry.published is None or entry.published >= since
 
         # 网页源的标题和时间要打开文章页才可靠，多取一些候选再按时间过滤
         limit = source.max_items * (2 if is_html else 1)
@@ -313,7 +316,7 @@ def fetch_source(
                 published, precision = page.published, page.precision
             else:
                 published, precision = entry.published, entry.precision
-            if published and now - published > max_age:
+            if published and published < since:
                 return None
             title = (page.title or entry.title) if is_html else entry.title
             if not title:

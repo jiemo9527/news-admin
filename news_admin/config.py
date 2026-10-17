@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix='NEWS_', env_file=BASE_DIR / '.env', env_file_encoding='utf-8', extra='ignore')
 
     data_dir: Path = BASE_DIR / 'data'
-    timezone: str = 'Asia/Shanghai'
     public_base_url: str = ''
 
     llm_base_url: str = 'https://api.openai.com/v1'
@@ -35,6 +34,10 @@ class Settings(BaseSettings):
     min_impact: int = 2
     drop_opinion: bool = False
     max_events: int = 30
+    # 每次抓取的时间窗：today_yesterday（昨天 0 点至今，北京时间）或 24h；后台可改
+    fetch_window: str = 'today_yesterday'
+    # 历史保留天数：超过的运行、事件、缩略图会被清理
+    retention_days: int = 90
 
     admin_username: str = 'admin'
     admin_password: str = ''

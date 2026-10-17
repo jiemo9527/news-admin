@@ -1,71 +1,67 @@
 {% extends 'base.html' %}
-{% block title %}新闻简报 #{{ run.id }}{% endblock %}
+{% from '_macros.html' import grade_badge, event_times, rating_table %}
+{% block title %}简报 #{{ run.id }}{% endblock %}
 {% block content %}
-<h1>新闻简报 <small>#{{ run.id }} · {{ run.finished_at[:16].replace('T', ' ') }} UTC</small></h1>
-<nav class="toc">{% for section in sections %}<a href="#s{{ loop.index }}">{{ section.title }}</a>{% endfor %}</nav>
+<section class="feed-head">
+  <div>
+    <p class="crumb"><a href="/briefs">往期简报</a> / #{{ run.id }}</p>
+    <h1>新闻简报 #{{ run.id }}</h1>
+    <p class="muted">生成于 {{ local_time(run.finished_at) }}</p>
+  </div>
+</section>
+<nav class="chips toc" aria-label="栏目">{% for section in sections %}<a class="chip" href="#s{{ loop.index }}">{{ section.title }}<span class="chip-count">{{ section.events | length }}</span></a>{% endfor %}</nav>
 {% for section in sections %}
-<section id="s{{ loop.index }}">
-  <h2>{{ section.title }}</h2>
+<section id="s{{ loop.index }}" class="brief-section">
+  <h2 class="section-title">{{ section.title }}</h2>
   {% for event in section.events %}
   {% set s = event.summary %}
-  <article id="e-{{ event.id }}" class="event{% if event.thumbnail %} has-thumb{% endif %}">
-    {% if event.thumbnail %}<img class="thumb" src="/thumb/{{ event.thumbnail }}" alt="" loading="lazy" width="160" height="107">{% endif %}
-    <div class="event-body">
-    {% set r = event.rating %}
-    <h3>
-      {% if r %}<span class="grade grade-{{ r.grade }}" title="{{ r.label }} · 总分 {{ '%.1f' % r.total }}">{{ r.grade }}</span>{% endif %}
-      {% if event.is_update %}<span class="tag update">更新</span>{% elif event.previous %}<span class="tag update">后续</span>{% endif %}
-      {{ s.headline if s else event.lead.title }}
-    </h3>
-    <div class="meta">
-      {% if event.lead_analysis %}<span class="tag">{{ region_label(event) }}</span><span class="tag">{{ topic_labels[event.lead_analysis.topic] }}</span>{% endif %}
-      {% set created, updated = created_updated(event.time_points()) %}
-      <span class="time" title="最早一篇报道的发布时间（北京时间）">创建 {{ created }}</span>
-      {% if updated %}<span class="time" title="最新报道或页面修改时间（北京时间）">更新 {{ updated }}</span>{% endif %}
-      <span>{{ event.sources | length }} 个来源</span>
-      {% if event.summary_degraded %}<span class="tag warn" title="模型摘要未通过事实校验，已降级为来源原文导语">原文导语</span>{% endif %}
-    </div>
-    {% if r %}
-    <details class="rating">
-      <summary>评级 <b>{{ r.grade }}</b> {{ r.label }} · {{ '%.1f' % r.total }} 分
-        {% for item in r.items %}<span class="dim">{{ item.label }} {{ '%+.1f' % item.points }}</span>{% endfor %}</summary>
-      <table>
-        {% for item in r.items %}
-        <tr>
-          <td>{{ item.label }}</td><td>{{ item.value }}</td>
-          <td class="bar">{% if item.max_points > 0 %}<i style="width: {{ [[item.points / item.max_points * 100, 0] | max, 100] | min }}%"></i>{% endif %}</td>
-          <td class="num">{{ '%+.2f' % item.points }}{% if item.max_points > 0 %}<span class="muted"> / {{ '%g' % item.max_points }}</span>{% endif %}</td>
-          <td class="muted">{{ item.detail }}</td>
-        </tr>
+  {% set r = event.rating %}
+  <article id="e-{{ event.id }}" class="event news-card{% if event.thumbnail %} has-thumb{% endif %}">
+    <div class="news-main event-body">
+      <div class="news-kicker">
+        {{ grade_badge(r) }}
+        {% if event.lead_analysis %}<span class="kicker-topic tag">{{ topic_labels[event.lead_analysis.topic] }}</span><span class="dot" aria-hidden="true">·</span><span class="tag">{{ region_label(event) }}</span>{% endif %}
+        {% if event.is_update %}<span class="pill pill-accent">更新</span>{% elif event.previous %}<span class="pill pill-accent">后续</span>{% endif %}
+        {% if event.summary_degraded %}<span class="pill pill-warn" title="模型摘要未通过事实校验，已改用来源原文要点">原文要点</span>{% endif %}
+      </div>
+      <h3 class="news-title">{{ s.headline if s else event.lead.title }}</h3>
+      {% if s %}
+      <p class="news-summary summary">
+        {% for sentence in s.sentences %}{{ sentence.text }}{% for n in sentence.sources %}<sup><a href="#{{ event.id }}-{{ n }}">[{{ n }}]</a></sup>{% endfor %}{% endfor %}
+      </p>
+      {% for conflict in s.conflicts %}<p class="conflict">说法不一：{{ conflict }}</p>{% endfor %}
+      {% endif %}
+      <div class="news-meta meta">
+        {{ event_times(event) }}
+        <span>{{ event.sources | length }} 个来源</span>
+      </div>
+      {% if event.previous %}
+      <div class="previous">
+        <span class="label">{{ '此前报道' if event.previous[0].relation == 'update' else '前情' }}</span>
+        <ul>
+        {% for ref in event.previous %}
+          <li><a href="/briefs/{{ ref.run_id }}#e-{{ ref.event_id }}">{{ ref.headline }}</a> <span class="muted">{{ format_time(ref.published_at, ref.time_precision) }}</span></li>
         {% endfor %}
-      </table>
-    </details>
-    {% endif %}
-    {% if s %}
-    <p class="summary">
-      {% for sentence in s.sentences %}{{ sentence.text }}{% for n in sentence.sources %}<sup><a href="#{{ event.id }}-{{ n }}">[{{ n }}]</a></sup>{% endfor %}{% endfor %}
-    </p>
-    {% for conflict in s.conflicts %}<p class="conflict">说法不一：{{ conflict }}</p>{% endfor %}
-    {% endif %}
-    {% if event.previous %}
-    <div class="previous">
-      <span class="label">{{ '此前报道' if event.previous[0].relation == 'update' else '前情' }}</span>
-      <ul>
-      {% for ref in event.previous %}
-        <li><a href="/briefs/{{ ref.run_id }}#e-{{ ref.event_id }}">{{ ref.headline }}</a> <span class="muted">{{ format_time(ref.published_at, ref.time_precision) }}</span></li>
-      {% endfor %}
-      </ul>
-    </div>
-    {% endif %}
-    <ol class="refs">
-      {% for article in event.articles %}
-      <li id="{{ event.id }}-{{ loop.index }}"><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.source }}｜{{ article.title }}</a>
+        </ul>
+      </div>
+      {% endif %}
+      {% if r %}
+      <details class="news-more rating">
+        <summary>评级 <b>{{ r.grade }}</b> {{ r.label }} · {{ '%.1f' % r.total }} 分
+          <span class="dims">{% for item in r.items %}<span class="dim">{{ item.label }} {{ '%+.1f' % item.points }}</span>{% endfor %}</span></summary>
+        <div class="news-more-body">{{ rating_table(r) }}</div>
+      </details>
+      {% endif %}
+      <ol class="refs">
+        {% for article in event.articles %}
         {% set ac, au = article_times(article) %}
-        <span class="muted">创建 {{ ac }}{% if au %} · 更新 {{ au }}{% endif %}</span>
-        {% if article.duplicate_sources %}<span class="dup">（另有 {{ article.duplicate_sources | join('、') }} 转载）</span>{% endif %}</li>
-      {% endfor %}
-    </ol>
+        <li id="{{ event.id }}-{{ loop.index }}"><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.source }}｜{{ article.title }}</a>
+          <span class="muted">创建 {{ ac }}{% if au %} · 更新 {{ au }}{% endif %}</span>
+          {% if article.duplicate_sources %}<span class="dup muted">（另有 {{ article.duplicate_sources | join('、') }} 转载）</span>{% endif %}</li>
+        {% endfor %}
+      </ol>
     </div>
+    {% if event.thumbnail %}<img class="news-thumb thumb" src="/thumb/{{ event.thumbnail }}" alt="" loading="lazy" decoding="async" width="160" height="107">{% endif %}
   </article>
   {% endfor %}
 </section>

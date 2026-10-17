@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-SHANGHAI = ZoneInfo('Asia/Shanghai')
+from .tz import TZ as SHANGHAI
 
 
 def _relative(delta_seconds: float) -> str:
@@ -29,7 +29,7 @@ def _relative(delta_seconds: float) -> str:
 def format_time(value: datetime | None, precision: str, now: datetime | None = None) -> str:
     if value is None or precision == 'none':
         return '发布时间未知'
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(SHANGHAI)
     local = value.astimezone(SHANGHAI)
     if precision == 'date':
         days = (now.astimezone(SHANGHAI).date() - local.date()).days

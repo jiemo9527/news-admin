@@ -10,6 +10,8 @@ from .cluster import ClusterConfig
 from .config import Settings, get_settings
 from .digest import render_text
 from .embeddings import EmbeddingClient, HashingEmbedder
+from . import fetch as _fetch
+from . import tz
 from .fetch import fetch_source
 from .filtering import FilterConfig
 from .images import ThumbnailCache
@@ -21,6 +23,11 @@ from .store import Store
 from .summarize import summarize_event
 
 log = logging.getLogger(__name__)
+
+
+def _module_fetch():
+    # 运行时查找，便于测试替换 runtime.fetch_source
+    return globals()['fetch_source']
 
 
 @dataclass
@@ -35,7 +42,7 @@ class Runtime:
     def __post_init__(self) -> None:
         s = self.settings
         deps = PipelineDeps(
-            fetch=fetch_source,
+            fetch=self._fetch,
             analyze=lambda articles: analyze_articles(self.llm, articles, s.min_topic_confidence, s.llm_concurrency),
             embed=self.embedder,
             judge_factory=lambda analyses: make_judge(self.llm, analyses),
@@ -48,6 +55,14 @@ class Runtime:
             max_events=s.max_events,
         )
         self.pipeline = Pipeline(self.store, deps)
+
+    def _fetch(self, source):
+        window = self.store.get_setting('fetch_window', self.settings.fetch_window)
+        return _module_fetch()(source, since=tz.fetch_since(window))
+
+    def cleanup(self) -> dict:
+        days = int(self.store.get_setting('retention_days', str(self.settings.retention_days)))
+        return {'runs': self.store.cleanup(days), 'thumbnails': self.thumbnails.prune(days)}
 
     def cluster_config(self) -> ClusterConfig:
         s = self.settings
@@ -68,6 +83,10 @@ class Runtime:
 
     def run_and_deliver(self, trigger: str = 'manual') -> int:
         run_id = self.pipeline.run(trigger)
+        try:
+            self.cleanup()
+        except Exception:  # 清理失败不影响本次结果
+            log.exception('cleanup failed')
         self.deliver(run_id)
         return run_id
 

@@ -1,0 +1,45 @@
+{% extends 'admin_base.html' %}
+{% block admin_title %}系统设置{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>系统设置</h1><p class="muted">系统时区固定为北京时间（Asia/Shanghai, UTC+8），抓取、定时、显示均以此为准。</p></div></div>
+<div class="grid-2">
+  <section class="panel">
+    <h2>抓取与保留</h2>
+    <form method="post" action="/admin/settings" class="form-stack">
+      <fieldset class="field">
+        <legend>每次运行抓取的时间范围</legend>
+        {% for key, label in fetch_windows.items() %}
+        <label class="radio"><input type="radio" name="fetch_window" value="{{ key }}" {% if key == fetch_window %}checked{% endif %}><span>{{ label }}</span></label>
+        {% endfor %}
+      </fieldset>
+      <label class="field"><span>历史保留天数（7-365）</span><input name="retention_days" type="number" min="7" max="365" value="{{ retention_days }}" inputmode="numeric"></label>
+      <p class="hint">超过保留期的运行记录、事件和缩略图在每次运行后自动清理。</p>
+      <div><button class="btn btn-primary">保存设置</button></div>
+    </form>
+  </section>
+  <section class="panel">
+    <h2>修改管理员密码</h2>
+    {% if password_pinned %}
+    <p>当前密码由环境变量 <code>NEWS_ADMIN_PASSWORD</code> 设置，请在 <code>.env</code> 中修改后重启服务。</p>
+    {% else %}
+    <form method="post" action="/admin/password" class="form-stack">
+      <label class="field"><span>当前密码</span><input name="current" type="password" autocomplete="current-password" required></label>
+      <label class="field"><span>新密码（至少 8 位）</span><input name="new" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label class="field"><span>确认新密码</span><input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
+      <p class="hint">修改后初始密码文件 data/admin_password.txt 会被删除，新密码以加盐哈希保存。</p>
+      <div><button class="btn btn-primary">修改密码</button></div>
+    </form>
+    {% endif %}
+  </section>
+</div>
+<section class="panel">
+  <h2>模型与向量</h2>
+  <dl class="kv">
+    <dt>大模型</dt><dd><code>{{ rt.settings.llm_model }}</code> · {{ rt.settings.llm_base_url }}</dd>
+    <dt>向量模型</dt><dd>{% if rt.embedding_degraded %}<span class="text-warn">未配置，使用字符哈希降级</span>{% else %}<code>{{ rt.settings.embedding_model }}</code> · {{ rt.settings.embedding_base_url }}{% endif %}</dd>
+    <dt>聚类阈值</dt><dd>≥ {{ rt.cluster_config().high }} 直接合并；{{ rt.cluster_config().low }}–{{ rt.cluster_config().high }} 交给模型判定</dd>
+    <dt>价值过滤</dt><dd>影响力低于 {{ rt.settings.min_impact }} 的不收录{% if rt.settings.drop_opinion %}；评论文章不收录{% endif %}</dd>
+  </dl>
+  <p class="hint">以上在 <code>.env</code> 中配置（NEWS_ 前缀），密钥不会显示在页面上。</p>
+</section>
+{% endblock %}

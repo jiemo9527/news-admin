@@ -19,6 +19,7 @@ import math
 import statistics
 from datetime import datetime
 
+from . import tz
 from .models import Event, Rating, ScoreItem
 
 HALF_LIFE_HOURS = 24
@@ -34,6 +35,7 @@ def _grade(total: float, impact: float) -> str:
 
 
 def rate_event(event: Event, now: datetime) -> Rating:
+    now = tz.to_local(now)
     analyses = list(event.analyses.values())
     impact = statistics.median(a.impact for a in analyses) if analyses else 2
     opinion = bool(analyses) and all(a.is_opinion for a in analyses)

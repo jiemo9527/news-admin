@@ -53,3 +53,15 @@ def test_tiny_images_icons_and_non_images_are_rejected(tmp_path):
 def test_choose_image_skips_logos_and_placeholders():
     assert choose_image(['https://x/logo.png', 'https://x/default-share.jpg', 'https://x/photo.jpg']) == 'https://x/photo.jpg'
     assert choose_image(['https://x/sprite.svg']) == ''
+
+
+def test_prune_removes_thumbnails_older_than_retention(tmp_path):
+    import os, time
+    cache = ThumbnailCache(tmp_path, transport=httpx.MockTransport(handler))
+    key = cache.fetch('https://img.test/big.png')
+    old = tmp_path / f'{key}.webp'
+    stale = time.time() - 91 * 86400
+    os.utime(old, (stale, stale))
+    fresh = tmp_path / ('f' * 32 + '.webp'); fresh.write_bytes(b'x')
+    assert cache.prune(90) == 1
+    assert not old.exists() and fresh.exists()

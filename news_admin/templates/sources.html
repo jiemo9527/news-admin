@@ -1,34 +1,49 @@
-{% extends 'base.html' %}
+{% extends 'admin_base.html' %}
+{% block admin_title %}新闻来源{% endblock %}
 {% block content %}
-<h1>来源</h1>
-<table>
-  <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>地址</th><th>权重</th><th>条数上限</th><th>抓正文</th><th>状态</th><th>最近成功</th><th>连续失败</th><th></th></tr></thead>
-  {% for s in sources %}
-  {% set h = health.get(s.id, {}) %}
-  <tr class="{% if not s.enabled %}disabled{% endif %}">
-    <td>{{ s.id }}</td><td>{{ s.name }}</td><td>{{ source_kinds[s.kind] }}</td><td class="url" title="{{ s.feed_url }}{% if s.link_pattern %}&#10;链接正则：{{ s.link_pattern }}{% endif %}">{{ s.feed_url }}</td><td>{{ s.weight }}</td><td>{{ s.max_items }}</td><td>{{ '是' if s.fetch_body else '否' }}</td>
-    <td>{{ '启用' if s.enabled else '停用' }}</td>
-    <td>{{ (h.last_ok_at or '-')[:16] }}</td>
-    <td title="{{ h.last_error }}" class="{% if h.consecutive_failures %}error{% endif %}">{{ h.consecutive_failures }}</td>
-    <td class="actions">
-      <form method="post" action="/admin/sources/{{ s.id }}/toggle" class="inline"><button class="link">{{ '停用' if s.enabled else '启用' }}</button></form>
-      <form method="post" action="/admin/sources/{{ s.id }}/delete" class="inline" onsubmit="return confirm('删除来源？')"><button class="link">删除</button></form>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-<div class="card">
-  <h2>新增 / 修改来源</h2>
-  <form method="post" action="/admin/sources" class="stack">
-    <label>ID（修改时填写）<input name="source_id" type="number"></label>
-    <label>名称<input name="name" required></label>
-    <label>类型<select name="kind">{% for k, label in source_kinds.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
-    <label>地址（Feed / 接口 / 列表页）<input name="feed_url" type="url" required></label>
-    <label>文章链接正则（仅网页列表页需要，如 <code>zaobao\.com\.sg/news/world/story\d+</code>）<input name="link_pattern"></label>
-    <label>权重<input name="weight" type="number" step="0.1" value="1.0"></label>
-    <label>每次最多条数<input name="max_items" type="number" value="20"></label>
-    <label><input type="checkbox" name="fetch_body" value="1" checked> 抓取正文（关闭则只用 Feed 摘要，更快但信息少）</label>
-    <button>保存</button>
-  </form>
+<div class="page-head">
+  <div><h1>新闻来源</h1><p class="muted">权重影响排序（默认 1.0）；网页列表源需要填写文章链接正则。</p></div>
+  <a class="btn btn-primary" href="#source-form">新增来源</a>
 </div>
+<section class="panel">
+  <div class="table-wrap">
+  <table class="table table-cards">
+    <thead><tr><th>名称</th><th>类型</th><th>地址</th><th class="num">权重</th><th class="num">条数</th><th>正文</th><th>状态</th><th>最近成功</th><th class="num">连续失败</th><th></th></tr></thead>
+    <tbody>
+    {% for s in sources %}
+    {% set h = health.get(s.id, {}) %}
+    <tr class="{% if not s.enabled %}row-disabled{% endif %}">
+      <td class="nowrap"><b>{{ s.name }}</b> <span class="muted">#{{ s.id }}</span></td>
+      <td data-label="类型" class="nowrap">{{ source_kinds[s.kind] }}</td>
+      <td data-label="地址" class="url" title="{{ s.feed_url }}{% if s.link_pattern %}&#10;链接正则：{{ s.link_pattern }}{% endif %}"><a href="{{ s.feed_url }}" target="_blank" rel="noopener noreferrer">{{ s.feed_url }}</a></td>
+      <td data-label="权重" class="num">{{ s.weight }}</td>
+      <td data-label="条数" class="num">{{ s.max_items }}</td>
+      <td data-label="正文">{{ '抓取' if s.fetch_body else '摘要' }}</td>
+      <td data-label="状态">{% if not s.enabled %}<span class="status status-stale">停用</span>{% elif h.consecutive_failures %}<span class="status status-failed" title="{{ h.last_error }}">异常</span>{% else %}<span class="status status-completed">正常</span>{% endif %}</td>
+      <td data-label="最近成功" class="nowrap">{{ local_time(h.last_ok_at, '%m-%d %H:%M') if h.last_ok_at else '—' }}</td>
+      <td data-label="连续失败" class="num {% if h.consecutive_failures %}text-error{% endif %}" title="{{ h.last_error }}">{{ h.consecutive_failures }}</td>
+      <td class="actions">
+        <form method="post" action="/admin/sources/{{ s.id }}/toggle"><button class="link">{{ '停用' if s.enabled else '启用' }}</button></form>
+        <form method="post" action="/admin/sources/{{ s.id }}/delete" onsubmit="return confirm('删除来源「{{ s.name }}」？')"><button class="link link-danger">删除</button></form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+<section class="panel" id="source-form">
+  <h2>新增 / 修改来源</h2>
+  <form method="post" action="/admin/sources" class="form-grid">
+    <label class="field"><span>ID（修改已有来源时填写）</span><input name="source_id" type="number" inputmode="numeric"></label>
+    <label class="field"><span>名称</span><input name="name" required></label>
+    <label class="field"><span>类型</span><select name="kind">{% for k, label in source_kinds.items() %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></label>
+    <label class="field span-2"><span>地址（Feed / 接口 / 列表页）</span><input name="feed_url" type="url" required spellcheck="false"></label>
+    <label class="field span-2"><span>文章链接正则（仅网页列表页，如 <code>zaobao\.com\.sg/news/world/story\d+</code>）</span><input name="link_pattern" spellcheck="false"></label>
+    <label class="field"><span>权重</span><input name="weight" type="number" step="0.1" value="1.0"></label>
+    <label class="field"><span>每次最多条数</span><input name="max_items" type="number" value="20"></label>
+    <label class="switch span-2"><input type="checkbox" name="fetch_body" value="1" checked><span>抓取正文（关闭则只用 Feed 摘要，更快但信息少）</span></label>
+    <div class="span-2"><button class="btn btn-primary">保存来源</button></div>
+  </form>
+</section>
 {% endblock %}

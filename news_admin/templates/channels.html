@@ -1,28 +1,38 @@
-{% extends 'base.html' %}
+{% extends 'admin_base.html' %}
+{% block admin_title %}推送渠道{% endblock %}
 {% block content %}
-<h1>推送渠道</h1>
-<table>
-  <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th></th></tr></thead>
-  {% for c in channels %}
-  <tr>
-    <td>{{ c.id }}</td><td>{{ c.name }}</td><td>{{ channel_kinds[c.kind].label }}</td><td>{{ '启用' if c.enabled else '停用' }}</td>
-    <td><form method="post" action="/admin/channels/{{ c.id }}/delete" class="inline" onsubmit="return confirm('删除渠道？')"><button class="link">删除</button></form></td>
-  </tr>
-  {% else %}<tr><td colspan="5">还没有渠道</td></tr>{% endfor %}
-</table>
+<div class="page-head">
+  <div><h1>推送渠道</h1><p class="muted">每次运行完成后，把文字版简报推送到已启用的渠道。</p></div>
+</div>
+<section class="panel">
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th></th></tr></thead>
+    {% for c in channels %}
+    <tr>
+      <td>{{ c.id }}</td><td><b>{{ c.name }}</b></td><td>{{ channel_kinds[c.kind].label }}</td>
+      <td><span class="status {{ 'status-completed' if c.enabled else 'status-stale' }}">{{ '启用' if c.enabled else '停用' }}</span></td>
+      <td class="actions"><form method="post" action="/admin/channels/{{ c.id }}/delete" onsubmit="return confirm('删除渠道？')"><button class="link link-danger">删除</button></form></td>
+    </tr>
+    {% else %}<tr><td colspan="5" class="empty-cell">还没有渠道，在下方选择一种添加。</td></tr>{% endfor %}
+  </table>
+  </div>
+</section>
+<div class="grid-2">
 {% for kind, spec in channel_kinds.items() %}
-<details class="card">
-  <summary>新增 / 修改：{{ spec.label }}</summary>
-  <form method="post" action="/admin/channels" class="stack">
+<details class="panel collapsible">
+  <summary><h2>{{ spec.label }}</h2></summary>
+  <form method="post" action="/admin/channels" class="form-stack">
     <input type="hidden" name="kind" value="{{ kind }}">
-    <label>ID（修改时填写；密钥类字段留空表示不修改）<input name="channel_id" type="number"></label>
-    <label>名称<input name="name" value="{{ spec.label }}"></label>
+    <label class="field"><span>ID（修改时填写；密钥类字段留空表示不修改）</span><input name="channel_id" type="number" inputmode="numeric"></label>
+    <label class="field"><span>名称</span><input name="name" value="{{ spec.label }}"></label>
     {% for field, label in spec.fields.items() %}
-    <label>{{ label }}{% if field in spec.required %} *{% endif %}<input name="{{ field }}" {% if field in ('password', 'secret', 'bot_token') %}type="password" autocomplete="new-password"{% endif %}></label>
+    <label class="field"><span>{{ label }}{% if field in spec.required %} *{% endif %}</span><input name="{{ field }}" spellcheck="false" {% if field in ('password', 'secret', 'bot_token') %}type="password" autocomplete="new-password"{% endif %}></label>
     {% endfor %}
-    <label><input type="checkbox" name="enabled" value="1" checked> 启用</label>
-    <button>保存</button>
+    <label class="switch"><input type="checkbox" name="enabled" value="1" checked><span>启用</span></label>
+    <div><button class="btn btn-primary">保存</button></div>
   </form>
 </details>
 {% endfor %}
+</div>
 {% endblock %}

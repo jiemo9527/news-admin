@@ -1,13 +1,16 @@
 {% extends 'base.html' %}
+{% block title %}登录{% endblock %}
 {% block content %}
-<div class="card narrow">
+<div class="auth">
   <h1>管理员登录</h1>
-  <form method="post" action="/login" class="stack">
+  <form method="post" action="/login" class="form-stack">
     <input type="hidden" name="next" value="{{ next }}">
-    <label>用户名<input name="username" value="admin" autocomplete="username"></label>
-    <label>密码<input name="password" type="password" autocomplete="current-password" autofocus></label>
-    <button>登录</button>
+    <label class="field"><span>用户名</span><input name="username" value="admin" autocomplete="username" autocapitalize="off"></label>
+    <label class="field"><span>密码</span><input name="password" type="password" autocomplete="current-password" autofocus required></label>
+    <button class="btn btn-primary btn-block">登录</button>
   </form>
-  <p class="muted">未设置 NEWS_ADMIN_PASSWORD 时，首次启动生成的密码在 data/admin_password.txt。</p>
+  {% if not password_pinned and initial_file %}
+  <p class="hint">首次登录：初始密码在服务器的 <code>data/admin_password.txt</code> 中，登录后请到「系统设置」修改。</p>
+  {% endif %}
 </div>
 {% endblock %}

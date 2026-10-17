@@ -26,6 +26,9 @@ def main(argv: list[str] | None = None) -> int:
     ex.add_argument('--output', default='eval/data/to_label.jsonl')
     args = parser.parse_args(argv)
 
+    from . import tz
+
+    logging.Formatter.converter = lambda *_: tz.now().timetuple()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
     if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
         sys.stdout.reconfigure(encoding='utf-8')

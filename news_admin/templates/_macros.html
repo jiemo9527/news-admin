@@ -1,0 +1,72 @@
+{% macro highlight(text, q) -%}
+{{ text | highlight(q) }}
+{%- endmacro %}
+
+{% macro grade_badge(r) -%}
+{% if r %}<span class="grade grade-{{ r.grade }}" title="{{ r.label }} · 总分 {{ '%.1f' % r.total }}">{{ r.grade }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro event_times(event) -%}
+{% set created, updated = created_updated(event.time_points()) %}
+<span class="time" title="最早一篇报道的发布时间">创建 {{ created }}</span>
+{% if updated %}<span class="time time-updated" title="最新报道或页面修改时间">更新 {{ updated }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro rating_table(r) -%}
+<table class="rating-table">
+  {% for item in r.items %}
+  <tr>
+    <th scope="row">{{ item.label }}</th>
+    <td class="rv">{{ item.value }}</td>
+    <td class="bar">{% if item.max_points > 0 %}<span class="meter"><i style="width: {{ [[item.points / item.max_points * 100, 0] | max, 100] | min }}%"></i></span>{% endif %}</td>
+    <td class="num">{{ '%+.2f' % item.points }}{% if item.max_points > 0 %}<span class="muted"> / {{ '%g' % item.max_points }}</span>{% endif %}</td>
+    <td class="detail">{{ item.detail }}</td>
+  </tr>
+  {% endfor %}
+  <tr class="total"><th scope="row">合计</th><td></td><td></td><td class="num">{{ '%.2f' % r.total }}</td><td class="detail">{{ r.grade }} · {{ r.label }}</td></tr>
+</table>
+{%- endmacro %}
+
+{% macro feed_card(item, q='') -%}
+{% set event = item.event %}
+{% set s = event.summary %}
+{% set a = event.lead_analysis %}
+{% set r = event.rating %}
+<article class="news-card" id="e-{{ event.id }}">
+  <div class="news-main">
+    <div class="news-kicker">
+      {{ grade_badge(r) }}
+      {% if a %}<span class="kicker-topic">{{ topic_labels[a.topic] }}</span><span class="dot" aria-hidden="true">·</span><span>{{ region_label(event) }}</span>{% endif %}
+      {% if event.is_update %}<span class="pill pill-accent">更新</span>{% elif event.previous %}<span class="pill pill-accent">后续</span>{% endif %}
+      {% if event.summary_degraded %}<span class="pill pill-warn" title="模型摘要未通过事实校验，已改用来源原文要点">原文要点</span>{% endif %}
+    </div>
+    <h2 class="news-title">{{ highlight(s.headline if s else event.lead.title, q) }}</h2>
+    {% if s %}<p class="news-summary">{{ highlight(s.sentences | map(attribute='text') | join(''), q) }}</p>{% endif %}
+    <div class="news-meta">
+      {{ event_times(event) }}
+      <span class="sources" title="{{ event.sources | join('、') }}">{{ event.sources[:3] | join('、') }}{% if event.sources | length > 3 %} 等 {{ event.sources | length }} 家{% endif %}</span>
+    </div>
+    {% if event.previous %}
+    {% set ref = event.previous[0] %}
+    <p class="news-prev"><span class="label">{{ '此前' if ref.relation == 'update' else '前情' }}</span><a href="/briefs/{{ ref.run_id }}#e-{{ ref.event_id }}">{{ ref.headline }}</a><span class="muted">{{ format_time(ref.published_at, ref.time_precision) }}</span></p>
+    {% endif %}
+    <details class="news-more">
+      <summary>来源与评分{% if r %} <span class="muted">· {{ '%.1f' % r.total }} 分</span>{% endif %}</summary>
+      <div class="news-more-body">
+        {% if s and s.conflicts %}{% for c in s.conflicts %}<p class="conflict">说法不一：{{ c }}</p>{% endfor %}{% endif %}
+        <ol class="refs">
+          {% for article in event.articles %}
+          {% set ac, au = article_times(article) %}
+          <li><a href="{{ article.url }}" target="_blank" rel="noopener noreferrer">{{ article.source }}｜{{ article.title }}</a>
+            <span class="muted">创建 {{ ac }}{% if au %} · 更新 {{ au }}{% endif %}</span>
+            {% if article.duplicate_sources %}<span class="muted">（另有 {{ article.duplicate_sources | join('、') }} 转载）</span>{% endif %}</li>
+          {% endfor %}
+        </ol>
+        {% if r %}{{ rating_table(r) }}{% endif %}
+        <p class="muted small">收录于 <a href="/briefs/{{ item.run_id }}#e-{{ event.id }}">简报 #{{ item.run_id }}</a></p>
+      </div>
+    </details>
+  </div>
+  {% if event.thumbnail %}<img class="news-thumb" src="/thumb/{{ event.thumbnail }}" alt="" loading="lazy" decoding="async" width="160" height="107">{% endif %}
+</article>
+{%- endmacro %}

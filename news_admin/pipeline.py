@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from . import tz
 from .cluster import ClusterConfig, Embed, Judge, cluster_articles, cosine, embedding_text
 from .dedupe import dedupe_articles
 from .fetch import FetchResult, Source
@@ -46,7 +47,7 @@ class PipelineDeps:
     llm_calls: Callable[[], list[LLMCall]]
     continuity_judge: ContinuityJudge | None = None
     thumbnail: Callable[[str], str] | None = None
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    now: Callable[[], datetime] = tz.now
     cluster_config: ClusterConfig | None = None
     filter_config: FilterConfig = field(default_factory=FilterConfig)
     continuity_config: ContinuityConfig = field(default_factory=ContinuityConfig)

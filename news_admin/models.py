@@ -8,6 +8,8 @@ LLM 输出模型（ArticleAnalysis / SameEventVerdict / EventSummary）同时用
 from __future__ import annotations
 
 from datetime import datetime
+
+from . import tz as _tz
 from enum import Enum
 from typing import Annotated, Literal
 
@@ -93,6 +95,11 @@ class Article(BaseModel):
     source_weight: float = 1.0
     duplicate_sources: list[str] = Field(default_factory=list)
 
+    @field_validator('published_at', 'updated_at', 'fetched_at')
+    @classmethod
+    def _beijing(cls, value: datetime | None) -> datetime | None:
+        return _tz.to_local(value) if value else None
+
     @model_validator(mode='before')
     @classmethod
     def _legacy_precision(cls, data: object) -> object:
@@ -161,6 +168,11 @@ class EventRef(BaseModel):
     published_at: datetime | None = None
     time_precision: TimePrecision = 'none'
     relation: Literal['update', 'follow_up']
+
+    @field_validator('published_at')
+    @classmethod
+    def _beijing(cls, value: datetime | None) -> datetime | None:
+        return _tz.to_local(value) if value else None
     reason: str = ''
 
     @model_validator(mode='after')

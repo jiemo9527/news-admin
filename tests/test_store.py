@@ -105,3 +105,12 @@ def test_event_ref_with_timestamp_but_unknown_precision_shows_date():
     ref = EventRef(run_id=1, event_id='e', headline='h', published_at=datetime(2026, 10, 17, tzinfo=timezone.utc), time_precision='none', relation='update')
     assert ref.time_precision == 'date'
     assert EventRef(run_id=1, event_id='e', headline='h', relation='update').time_precision == 'none'
+
+
+def test_timestamps_are_beijing_time_and_old_utc_rows_are_migrated(tmp_path):
+    store = Store(tmp_path / 'n.db')
+    run_id = store.start_run('manual')
+    assert store.get_run(run_id)['started_at'].endswith('+08:00')
+    with store._conn() as conn:
+        conn.execute("UPDATE runs SET started_at='2026-10-17T04:00:00+00:00'")
+    assert Store(tmp_path / 'n.db').get_run(run_id)['started_at'] == '2026-10-17T12:00:00+08:00'

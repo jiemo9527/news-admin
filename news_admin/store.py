@@ -5,13 +5,57 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from . import tz
 from .fetch import Source
 from .llm import LLMCall
 from .models import Event
+
+FEED_RANGES = {'all': '全部', 'today': '今天', 'yesterday': '昨天', '3d': '3天内', '7d': '一周内'}
+FEED_SORTS = {'time': '最新', 'score': '评级'}
+
+
+@dataclass
+class FeedItem:
+    run_id: int
+    event: Event
+
+
+@dataclass
+class FeedPage:
+    items: list[FeedItem]
+    total: int
+    page: int
+    per_page: int
+
+    @property
+    def events(self) -> list[Event]:
+        return [item.event for item in self.items]
+
+    @property
+    def pages(self) -> int:
+        return max(1, -(-self.total // self.per_page))
+
+
+def _event_time(event: Event, fallback: str) -> str:
+    """首页排序/筛选用的时间：事件最近一次报道（或页面更新）的时间，没有则用入库时间。"""
+    latest = event.last_updated
+    return tz.iso(latest) if latest else fallback
+
+
+def _search_text(event: Event) -> str:
+    parts = [event.summary.headline if event.summary else '', *(s.text for s in (event.summary.sentences if event.summary else []))]
+    parts += [a.title for a in event.articles] + event.sources
+    parts += [e for an in event.analyses.values() for e in [an.title_zh, *an.entities]]
+    return '\n'.join(parts).lower()
+
+
+def _like_escape(term: str) -> str:
+    return term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -98,7 +142,12 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+    return tz.iso()
+
+
+_TIME_COLUMNS = {
+    'runs': ('started_at', 'finished_at'), 'events': ('created_at',), 'deliveries': ('created_at',), 'sources': ('last_ok_at',),
+}
 
 
 class Store:
@@ -112,6 +161,18 @@ class Store:
                 conn.execute("ALTER TABLE sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'rss'")
             if 'link_pattern' not in columns:
                 conn.execute("ALTER TABLE sources ADD COLUMN link_pattern TEXT NOT NULL DEFAULT ''")
+            event_columns = {row[1] for row in conn.execute('PRAGMA table_info(events)')}
+            for column, ddl in (('canonical_id', "TEXT NOT NULL DEFAULT ''"), ('event_time', 'TEXT'), ('search_text', "TEXT NOT NULL DEFAULT ''")):
+                if column not in event_columns:
+                    conn.execute(f'ALTER TABLE events ADD COLUMN {column} {ddl}')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_events_canonical ON events(canonical_id, run_id)')
+            # 早期版本按 UTC 存储时间戳，统一改写为北京时间（字符串比较依赖同一时区）
+            for table, cols in _TIME_COLUMNS.items():
+                for col in cols:
+                    rows = conn.execute(f"SELECT rowid, {col} FROM {table} WHERE {col} LIKE '%+00:00'").fetchall()
+                    for rowid, value in rows:
+                        conn.execute(f'UPDATE {table} SET {col}=? WHERE rowid=?', (tz.iso(tz.parse(value)), rowid))
+        self._backfill_feed_columns()
 
     @contextmanager
     def _conn(self):
@@ -227,24 +288,137 @@ class Store:
         return rows[0] if rows else None
 
     # ---------- events ----------
+    def _canonical_id(self, conn, run_id: int, event: Event) -> str:
+        """同一事件的多个版本共用一个 canonical_id，首页只显示最新版本；后续进展（follow_up）是新事件，单独成条。
+
+        判定为同一事件：① 流水线标记为「更新」并引用了上一版本；② 与更早的事件共享任何一篇报道链接。
+        """
+        ref = event.previous[0] if event.previous else None
+        if event.is_update and ref and ref.relation == 'update':
+            row = conn.execute('SELECT canonical_id FROM events WHERE run_id=? AND id=?', (ref.run_id, ref.event_id)).fetchone()
+            return row[0] if row and row[0] else f'{ref.run_id}:{ref.event_id}'
+        urls = list({a.url for a in event.articles})
+        if urls:
+            marks = ','.join('?' * len(urls))
+            row = conn.execute(
+                f"SELECT e.canonical_id FROM event_urls u JOIN events e ON e.run_id=u.run_id AND e.id=u.event_id "
+                f"WHERE u.url IN ({marks}) AND u.run_id < ? AND e.canonical_id != '' ORDER BY u.run_id DESC LIMIT 1",
+                (*urls, run_id),
+            ).fetchone()
+            if row:
+                return row[0]
+        return f'{run_id}:{event.id}'
+
     def save_events(self, run_id: int, events: list[Event]) -> None:
         with self._conn() as conn:
+            created = _now()
             for rank, event in enumerate(events, 1):
                 analysis = event.lead_analysis
                 conn.execute(
-                    'INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                    'INSERT INTO events(id, run_id, rank, score, headline, region, topic, degraded, is_update, payload_json, created_at, '
+                    'canonical_id, event_time, search_text) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (
                         event.id, run_id, rank, event.score,
                         event.summary.headline if event.summary else event.lead.title,
                         analysis.region.value if analysis else '',
                         analysis.topic.value if analysis else '',
                         int(event.summary_degraded), int(event.is_update),
-                        event.model_dump_json(), _now(),
+                        event.model_dump_json(), created,
+                        self._canonical_id(conn, run_id, event), _event_time(event, created), _search_text(event),
                     ),
                 )
                 for article in event.articles:
                     for source in [article.source, *article.duplicate_sources]:
                         conn.execute('INSERT INTO event_urls VALUES (?,?,?,?)', (run_id, event.id, article.url, source))
+
+    FEED_INDEX_VERSION = '2'
+
+    def _backfill_feed_columns(self) -> None:
+        """补齐首页索引列；索引规则升级时（版本号变化）全部重算。"""
+        with self._conn() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key='feed_index_version'").fetchone()
+            rebuild = not row or row[0] != self.FEED_INDEX_VERSION
+            if rebuild:
+                conn.execute("UPDATE events SET canonical_id=''")
+            rows = conn.execute(
+                "SELECT rowid, run_id, payload_json, created_at FROM events WHERE canonical_id='' OR event_time IS NULL OR search_text='' ORDER BY run_id, rank"
+            ).fetchall()
+            for rowid, run_id, payload, created in rows:
+                event = Event.model_validate_json(payload)
+                conn.execute(
+                    'UPDATE events SET canonical_id=?, event_time=?, search_text=? WHERE rowid=?',
+                    (self._canonical_id(conn, run_id, event), _event_time(event, created), _search_text(event), rowid),
+                )
+            conn.execute(
+                "INSERT INTO settings VALUES ('feed_index_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self.FEED_INDEX_VERSION,),
+            )
+
+    _LATEST_JOIN = (
+        'FROM events e JOIN runs r ON r.id=e.run_id '
+        "JOIN (SELECT e2.canonical_id, MAX(e2.run_id) AS run_id FROM events e2 JOIN runs r2 ON r2.id=e2.run_id "
+        "WHERE r2.status='completed' GROUP BY e2.canonical_id) latest "
+        'ON latest.canonical_id=e.canonical_id AND latest.run_id=e.run_id '
+    )
+
+    @staticmethod
+    def _feed_where(range_: str, q: str, topic: str, now: datetime) -> tuple[list[str], list]:
+        where, params = ["r.status='completed'"], []
+        if range_ == 'today':
+            where.append('e.event_time >= ?'); params.append(tz.iso(tz.day_start(now)))
+        elif range_ == 'yesterday':
+            where.append('e.event_time >= ? AND e.event_time < ?'); params += [tz.iso(tz.day_start(now, 1)), tz.iso(tz.day_start(now))]
+        elif range_ == '3d':
+            where.append('e.event_time >= ?'); params.append(tz.iso(tz.day_start(now, 2)))
+        elif range_ == '7d':
+            where.append('e.event_time >= ?'); params.append(tz.iso(tz.day_start(now, 6)))
+        if topic:
+            where.append('e.topic = ?'); params.append(topic)
+        for term in q.lower().split()[:8]:
+            where.append("e.search_text LIKE ? ESCAPE '\\'"); params.append(f'%{_like_escape(term)}%')
+        return where, params
+
+    def feed(
+        self, range_: str = 'all', q: str = '', page: int = 1, per_page: int = 20, sort: str = 'time', now: datetime | None = None,
+        topic: str = '',
+    ) -> FeedPage:
+        """首页汇总：所有已完成运行的事件，同一事件只取最新版本；按北京时间自然日筛选，关键词需全部命中。"""
+        now = tz.to_local(now) if now else tz.now()
+        where, params = self._feed_where(range_, q, topic, now)
+        base = self._LATEST_JOIN + 'WHERE ' + ' AND '.join(where)
+        order = 'e.score DESC, e.event_time DESC' if sort == 'score' else 'e.event_time DESC, e.score DESC'
+        page = max(1, page)
+        with self._conn() as conn:
+            total = conn.execute(f'SELECT COUNT(*) {base}', params).fetchone()[0]
+            rows = conn.execute(
+                f'SELECT e.run_id, e.payload_json {base} ORDER BY {order} LIMIT ? OFFSET ?', (*params, per_page, (page - 1) * per_page)
+            ).fetchall()
+        items = [FeedItem(run_id=int(r[0]), event=Event.model_validate_json(r[1])) for r in rows]
+        return FeedPage(items=items, total=int(total), page=page, per_page=per_page)
+
+    def topic_counts(self, range_: str = 'all', q: str = '', now: datetime | None = None) -> dict[str, int]:
+        now = tz.to_local(now) if now else tz.now()
+        where, params = self._feed_where(range_, q, '', now)
+        rows = self._rows(
+            f"SELECT e.topic, COUNT(*) AS n {self._LATEST_JOIN} WHERE {' AND '.join(where)} AND e.topic != '' GROUP BY e.topic",
+            tuple(params),
+        )
+        return {r['topic']: r['n'] for r in rows}
+
+    def brief_index(self, limit: int = 100) -> list[dict]:
+        return self._rows(
+            "SELECT r.id, r.trigger, r.started_at, r.finished_at, "
+            "(SELECT COUNT(*) FROM events WHERE run_id=r.id) AS events, "
+            "(SELECT headline FROM events WHERE run_id=r.id ORDER BY rank LIMIT 1) AS top "
+            "FROM runs r WHERE r.status='completed' ORDER BY r.id DESC LIMIT ?",
+            (limit,),
+        )
+
+    def cleanup(self, retention_days: int = 90, now: datetime | None = None) -> int:
+        """删除超过保留期的运行（事件、来源结果、推送记录随外键级联删除）。返回删除的运行数。"""
+        cutoff = tz.iso((tz.to_local(now) if now else tz.now()) - timedelta(days=retention_days))
+        with self._conn() as conn:
+            return conn.execute("DELETE FROM runs WHERE started_at < ? AND status != 'running'", (cutoff,)).rowcount
 
     def load_events(self, run_id: int) -> list[Event]:
         rows = self._rows('SELECT payload_json FROM events WHERE run_id=? ORDER BY rank', (run_id,))
@@ -252,7 +426,7 @@ class Store:
 
     def recent_events(self, days: float = 7, exclude_run: int | None = None) -> list[tuple[int, Event]]:
         """近 N 天已完成运行中发布的事件，按运行从新到旧；同一故事线只保留最新一次。"""
-        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        since = tz.iso(tz.now() - timedelta(days=days))
         rows = self._rows(
             'SELECT e.run_id, e.payload_json FROM events e JOIN runs r ON r.id=e.run_id '
             "WHERE r.status='completed' AND r.started_at >= ? AND e.run_id != ? ORDER BY e.run_id DESC, e.rank",
@@ -271,7 +445,7 @@ class Store:
 
     def recent_event_index(self, hours: float = 48, exclude_run: int | None = None) -> dict[str, dict]:
         """近期已发布事件：url → {event_key, sources, urls}，用于跨批次判断新事件 / 更新 / 重复。"""
-        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        since = tz.iso(tz.now() - timedelta(hours=hours))
         rows = self._rows(
             'SELECT u.run_id, u.event_id, u.url, u.source FROM event_urls u JOIN runs r ON r.id=u.run_id '
             "WHERE r.status='completed' AND r.started_at >= ? AND u.run_id != ?",

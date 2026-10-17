@@ -1,52 +1,78 @@
-{% extends 'base.html' %}
+{% extends 'admin_base.html' %}
+{% block admin_title %}运行 #{{ run.id }}{% endblock %}
 {% block content %}
-<h1>运行 #{{ run.id }} <small class="status {{ run.status }}">{{ run.status }}</small></h1>
-{% if run.error %}<pre class="error">{{ run.error }}</pre>{% endif %}
-<div class="grid2">
-  <div class="card">
-    <h2>流水线</h2>
-    <table class="kv">
-      {% for key, label in [('articles_fetched','抓取文章'),('articles_after_dedupe','去重后'),('articles_analyzed','分析成功'),('articles_filtered','价值过滤'),('clusters','聚类事件'),('events_unchanged','与此前重复（未发布）'),('events_updated','同一事件更新'),('events_follow_up','后续进展'),('events_with_thumbnail','有配图'),('events_published','发布事件'),('summaries_degraded','降级摘要')] %}
-      <tr><th>{{ label }}</th><td>{{ run.stats.get(key, '-') }}</td></tr>
-      {% endfor %}
-    </table>
+{% set st = run.stats %}
+<div class="page-head">
+  <div>
+    <p class="crumb"><a href="/admin">概览</a> / 运行 #{{ run.id }}</p>
+    <h1>运行 #{{ run.id }} <span class="status status-{{ run.status }}">{{ {'completed': '完成', 'failed': '失败', 'running': '运行中', 'stale': '中断'}.get(run.status, run.status) }}</span></h1>
+    <p class="muted">{{ local_time(run.started_at) }} 开始 · 耗时 {{ duration(run.started_at, run.finished_at) }}</p>
   </div>
-  <div class="card">
-    <h2>模型调用</h2>
-    <table>
-      <thead><tr><th>阶段</th><th>调用</th><th>缓存</th><th>重试</th><th>失败</th><th>输入 Token</th><th>输出 Token</th></tr></thead>
-      {% for stage, s in run.stats.get('llm', {}).items() %}
-      <tr><td>{{ stage }}</td><td>{{ s.calls }}</td><td>{{ s.cached }}</td><td>{{ s.retries }}</td><td>{{ s.errors }}</td><td>{{ s.prompt_tokens }}</td><td>{{ s.completion_tokens }}</td></tr>
-      {% endfor %}
-    </table>
+  <div class="head-actions">
+    {% if run.status == 'completed' %}<a class="btn" href="/briefs/{{ run.id }}">查看简报</a>{% endif %}
+    <form method="post" action="/admin/runs/{{ run.id }}/deliver"><button class="btn btn-primary">重新推送</button></form>
   </div>
 </div>
-<h2>来源</h2>
-<table>
-  <thead><tr><th>来源</th><th>文章</th><th>错误</th></tr></thead>
-  {% for s in run.sources %}<tr><td>{{ s.name }}</td><td>{{ s.article_count }}</td><td class="error">{{ s.error }}</td></tr>{% endfor %}
-</table>
-<h2>推送 <form method="post" action="/admin/runs/{{ run.id }}/deliver" class="inline"><button>重新推送</button></form></h2>
-<table>
-  {% for d in deliveries %}<tr><td>{{ d.name }}</td><td class="status {{ d.status }}">{{ d.status }}</td><td>{{ d.created_at[:16] }}</td><td class="error">{{ d.error }}</td></tr>{% else %}<tr><td>尚未推送</td></tr>{% endfor %}
-</table>
-<details class="card"><summary>被过滤的文章（{{ run.stats.get('articles_filtered', 0) }}）</summary>
-<table>
-  <thead><tr><th>来源</th><th>标题</th><th>原因</th></tr></thead>
-  {% for f in run.stats.get('filtered', []) %}<tr><td>{{ f.source }}</td><td><a href="{{ f.url }}" target="_blank" rel="noopener noreferrer">{{ f.title }}</a></td><td>{{ f.reason }}</td></tr>{% endfor %}
-</table>
+{% if run.error %}<div class="alert alert-error"><pre>{{ run.error }}</pre></div>{% endif %}
+
+<section class="panel">
+  <h2>流水线漏斗</h2>
+  <div class="funnel">
+    {% for key, label in [('articles_fetched','抓取'),('articles_after_dedupe','去重后'),('articles_filtered','价值过滤'),('clusters','聚类事件'),('events_unchanged','与此前重复'),('events_updated','同事件更新'),('events_follow_up','后续进展'),('events_published','发布'),('events_with_thumbnail','有配图'),('summaries_degraded','摘要降级')] %}
+    <div class="funnel-step"><span class="funnel-value">{{ st.get(key, '—') }}</span><span class="funnel-label">{{ label }}</span></div>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="grid-2">
+  <section class="panel">
+    <h2>来源抓取</h2>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>来源</th><th class="num">文章</th><th>错误</th></tr></thead>
+      {% for s in run.sources %}<tr><td>{{ s.name }}</td><td class="num">{{ s.article_count }}</td><td class="text-error small">{{ s.error }}</td></tr>{% endfor %}
+    </table></div>
+  </section>
+  <section class="panel">
+    <h2>模型调用</h2>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>阶段</th><th class="num">调用</th><th class="num">缓存</th><th class="num">重试</th><th class="num">失败</th><th class="num">输入</th><th class="num">输出</th></tr></thead>
+      {% for stage, s in st.get('llm', {}).items() %}
+      <tr><td>{{ {'analyze': '逐篇分析', 'same_event': '同事件判定', 'continuity': '前序关联', 'summarize': '摘要'}.get(stage, stage) }}</td><td class="num">{{ s.calls }}</td><td class="num">{{ s.cached }}</td><td class="num">{{ s.retries }}</td><td class="num">{{ s.errors }}</td><td class="num">{{ '{:,}'.format(s.prompt_tokens) }}</td><td class="num">{{ '{:,}'.format(s.completion_tokens) }}</td></tr>
+      {% endfor %}
+    </table></div>
+  </section>
+</div>
+
+<section class="panel">
+  <h2>发布的事件</h2>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>#</th><th>评级</th><th>标题</th><th>主题</th><th class="num">影响力</th><th>来源</th></tr></thead>
+    {% for e in events %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{% if e.rating %}<span class="grade grade-{{ e.rating.grade }}">{{ e.rating.grade }}</span>{% endif %} <span class="muted">{{ '%.1f' | format(e.score) }}</span></td>
+      <td>{% if e.is_update %}<span class="pill pill-accent">更新</span> {% elif e.previous %}<span class="pill pill-accent">后续</span> {% endif %}{{ e.summary.headline if e.summary else e.lead.title }}{% if e.summary_degraded %} <span class="pill pill-warn">降级</span>{% endif %}</td>
+      <td class="nowrap">{% if e.lead_analysis %}{{ region_label(e) }} · {{ topic_labels[e.lead_analysis.topic] }}{% endif %}</td>
+      <td class="num">{% if e.lead_analysis %}<span title="{{ e.lead_analysis.impact_reason }}">{{ e.lead_analysis.impact }}</span>{% endif %}</td>
+      <td class="small">{{ e.sources | join('、') }}</td>
+    </tr>
+    {% endfor %}
+  </table></div>
+</section>
+
+<details class="panel collapsible">
+  <summary><h2>被过滤的文章（{{ st.get('articles_filtered', 0) }}）</h2></summary>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>来源</th><th>标题</th><th>原因</th></tr></thead>
+    {% for f in st.get('filtered', []) %}<tr><td class="nowrap">{{ f.source }}</td><td><a href="{{ f.url }}" target="_blank" rel="noopener noreferrer">{{ f.title }}</a></td><td class="small">{{ f.reason }}</td></tr>{% endfor %}
+  </table></div>
 </details>
-<h2>事件</h2>
-<table>
-  <thead><tr><th>#</th><th>分数</th><th>标题</th><th>主题</th><th>影响力</th><th>来源</th></tr></thead>
-  {% for e in events %}
-  <tr>
-    <td>{{ loop.index }}</td><td>{{ '%.2f' | format(e.score) }}</td>
-    <td>{% if e.is_update %}<span class="tag update">更新</span>{% endif %}{{ e.summary.headline if e.summary else e.lead.title }}{% if e.summary_degraded %} <span class="tag warn">降级</span>{% endif %}</td>
-    <td>{% if e.lead_analysis %}{{ region_label(e) }} / {{ topic_labels[e.lead_analysis.topic] }}{% endif %}</td>
-    <td>{% if e.lead_analysis %}<span title="{{ e.lead_analysis.impact_reason }}">{{ e.lead_analysis.impact }}</span>{% endif %}</td>
-    <td>{{ e.sources | join('、') }}</td>
-  </tr>
-  {% endfor %}
-</table>
+
+<section class="panel">
+  <h2>推送记录</h2>
+  <div class="table-wrap"><table class="table">
+    {% for d in deliveries %}<tr><td>{{ d.name }}</td><td><span class="status status-{{ d.status }}">{{ '成功' if d.status == 'sent' else '失败' }}</span></td><td class="nowrap">{{ local_time(d.created_at) }}</td><td class="text-error small">{{ d.error }}</td></tr>
+    {% else %}<tr><td class="empty-cell">尚未推送</td></tr>{% endfor %}
+  </table></div>
+</section>
 {% endblock %}

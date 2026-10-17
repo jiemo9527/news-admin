@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}往期简报{% endblock %}
+{% block content %}
+<section class="feed-head"><div><h1>往期简报</h1><p class="muted">每次运行生成一期，按评级分栏，便于回看当时的完整版面。</p></div></section>
+{% if briefs %}
+<ul class="brief-list">
+  {% for b in briefs %}
+  <li>
+    <a href="/briefs/{{ b.id }}">
+      <span class="brief-no">#{{ b.id }}</span>
+      <span class="brief-main"><span class="brief-top">{{ b.top or '（空）' }}</span><span class="muted">{{ local_time(b.finished_at) }} · {{ b.events }} 条{% if b.trigger == 'schedule' %} · 定时{% endif %}</span></span>
+      <span class="chev" aria-hidden="true">›</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="empty"><h2>还没有简报</h2></div>
+{% endif %}
+{% endblock %}

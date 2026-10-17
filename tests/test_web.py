@@ -29,8 +29,8 @@ def seed_run(rt):
 def test_public_brief_renders_citations_and_conflicts(tmp_path):
     rt, client = make_client(tmp_path)
     run_id = seed_run(rt)
-    home = client.get('/', follow_redirects=False)
-    assert home.headers['location'] == f'/briefs/{run_id}'
+    home = client.get('/')
+    assert home.status_code == 200 and '美联储降息25个基点' in home.text
     html = client.get(f'/briefs/{run_id}').text
     assert '美联储降息25个基点' in html and '[1]' in html and '说法不一：A称X；B称Y' in html and '国际' in html
 
@@ -128,3 +128,79 @@ def test_brief_shows_rating_breakdown(tmp_path):
     assert 'grade-A' in html and '评级 <b>A</b>' in html
     for text in ('影响力', '4/5', '来源', '1 家', '新鲜度', '来源权重', '影响美国货币政策'):
         assert text in html
+
+
+def test_runtime_fetch_uses_configured_window_and_cleans_up(tmp_path, monkeypatch):
+    from news_admin import runtime as runtime_mod, tz
+    from news_admin.fetch import FetchResult
+    rt, _ = make_client(tmp_path)
+    seen = {}
+
+    def fake_fetch(source, since=None, **kw):
+        seen['since'] = since
+        return FetchResult(source=source)
+
+    monkeypatch.setattr(runtime_mod, 'fetch_source', fake_fetch)
+    rt.store.set_setting('fetch_window', '24h')
+    rt.pipeline.deps.fetch(rt.store.list_sources()[0])
+    assert abs((tz.now() - seen['since']).total_seconds() - 86400) < 5
+    rt.store.set_setting('fetch_window', 'today_yesterday')
+    rt.pipeline.deps.fetch(rt.store.list_sources()[0])
+    assert seen['since'] == tz.day_start(days_ago=1)
+
+
+def test_home_feed_filters_and_pagination_links(tmp_path):
+    rt, client = make_client(tmp_path)
+    seed_run(rt)
+    html = client.get('/', params={'q': '美联储', 'range': '3d', 'sort': 'score'}).text
+    assert '<mark>美联储</mark>降息25个基点' in html
+    assert client.get('/', params={'q': '<script>'}).text.count('<script>') == 0
+    assert 'name="q"' in html and 'value="美联储"' in html
+    for label in ('今天', '昨天', '3天内', '一周内'):
+        assert label in html
+    assert 'aria-current="page"' in html
+    miss = client.get('/', params={'q': '不存在的关键词'}).text
+    assert '没有符合条件的新闻' in miss
+    assert client.get('/', params={'range': 'bogus', 'page': '-3'}).status_code == 200
+
+
+def test_settings_page_saves_fetch_window_and_retention(tmp_path):
+    rt, client = make_client(tmp_path)
+    client.post('/login', data={'username': 'admin', 'password': 'pw'})
+    assert client.get('/admin/settings').status_code == 200
+    client.post('/admin/settings', data={'fetch_window': '24h', 'retention_days': '30'})
+    assert rt.store.get_setting('fetch_window') == '24h' and rt.store.get_setting('retention_days') == '30'
+    client.post('/admin/settings', data={'fetch_window': 'evil', 'retention_days': '0'})
+    assert rt.store.get_setting('fetch_window') == '24h' and rt.store.get_setting('retention_days') == '30'
+
+
+def test_password_change_when_not_pinned_by_env(tmp_path):
+    settings = Settings(data_dir=tmp_path, secret_key='s', llm_api_key='k', _env_file=None)
+    rt = build_runtime(settings)
+    client = TestClient(create_app(rt, start_scheduler=False))
+    initial = (tmp_path / 'admin_password.txt').read_text(encoding='utf-8').strip()
+    client.post('/login', data={'username': 'admin', 'password': initial})
+    assert client.get('/admin').status_code == 200
+    client.post('/admin/password', data={'current': 'wrong', 'new': 'n3w-Passw0rd', 'confirm': 'n3w-Passw0rd'})
+    client.post('/admin/password', data={'current': initial, 'new': 'short', 'confirm': 'short'})
+    client.post('/logout')
+    client.post('/login', data={'username': 'admin', 'password': initial})
+    assert client.get('/admin', follow_redirects=False).status_code == 200
+    client.post('/admin/password', data={'current': initial, 'new': 'n3w-Passw0rd', 'confirm': 'n3w-Passw0rd'})
+    assert not (tmp_path / 'admin_password.txt').exists()
+    assert rt.store.get_setting('admin_password') == ''
+    client.post('/logout')
+    client.post('/login', data={'username': 'admin', 'password': initial})
+    assert client.get('/admin', follow_redirects=False).status_code == 303
+    client.post('/login', data={'username': 'admin', 'password': 'n3w-Passw0rd'})
+    assert client.get('/admin', follow_redirects=False).status_code == 200
+
+
+def test_password_pinned_by_env_cannot_be_changed_in_ui(tmp_path):
+    rt, client = make_client(tmp_path)
+    client.post('/login', data={'username': 'admin', 'password': 'pw'})
+    assert '由环境变量' in client.get('/admin/settings').text
+    client.post('/admin/password', data={'current': 'pw', 'new': 'n3w-Passw0rd', 'confirm': 'n3w-Passw0rd'})
+    client.post('/logout')
+    client.post('/login', data={'username': 'admin', 'password': 'pw'})
+    assert client.get('/admin', follow_redirects=False).status_code == 200

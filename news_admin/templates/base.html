@@ -2,26 +2,37 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}News Admin{% endblock %}</title>
-<link rel="stylesheet" href="/static/style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1419" media="(prefers-color-scheme: dark)">
+<title>{% block title %}新闻汇总{% endblock %} · News Admin</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
-<body>
-<header class="top">
-  <a class="brand" href="/">News Admin</a>
-  <nav>
-    {% if admin %}
-      <a href="/admin">运行</a>
-      <a href="/admin/sources">来源</a>
-      <a href="/admin/channels">推送</a>
-      <form method="post" action="/logout" class="inline"><button class="link">退出</button></form>
-    {% else %}
-      <a href="/login">管理</a>
-    {% endif %}
-  </nav>
+<body class="{% block body_class %}{% endblock %}">
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">N</span><span>新闻汇总</span></a>
+    <nav class="mainnav" aria-label="主导航">
+      <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>新闻</a>
+      <a href="/briefs" {% if path.startswith('/briefs') %}aria-current="page"{% endif %}>往期简报</a>
+      {% if admin %}
+      <a href="/admin" {% if path.startswith('/admin') %}aria-current="page"{% endif %}>管理</a>
+      {% else %}
+      <a href="/login" {% if path == '/login' %}aria-current="page"{% endif %}>登录</a>
+      {% endif %}
+    </nav>
+  </div>
 </header>
 {% set message = request.session.pop('flash', None) %}
-{% if message %}<div class="flash">{{ message }}</div>{% endif %}
-<main>{% block content %}{% endblock %}</main>
+{% if message %}
+{% set text = message.text if message is mapping else message %}
+{% set kind = message.kind if message is mapping else 'info' %}
+<div class="toast toast-{{ kind }}" role="status">{{ text }}</div>
+{% endif %}
+{% block page %}
+<main class="container">{% block content %}{% endblock %}</main>
+{% endblock %}
+<footer class="footer">所有时间均为北京时间（UTC+8）</footer>
 </body>
 </html>
