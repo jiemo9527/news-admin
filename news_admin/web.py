@@ -283,6 +283,14 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     def brief_list(request: Request):
         return page(request, 'briefs.html', briefs=rt.store.brief_index())
 
+    @app.get('/briefs/push/{key}', response_class=HTMLResponse)
+    def push_brief(request: Request, key: str):
+        snapshot = rt.store.get_push_brief(key)
+        if snapshot is None:
+            raise HTTPException(404)
+        return page(request, 'brief.html', run={'id': snapshot['run_id'], 'finished_at': snapshot['created_at']},
+                    sections=build_sections(snapshot['events']), push_snapshot=True)
+
     @app.get('/briefs/{run_id}', response_class=HTMLResponse)
     def brief(request: Request, run_id: int):
         run = rt.store.get_run(run_id)
@@ -610,6 +618,15 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             'cluster_low': number('cluster_low', float, 0.2, 0.95, optional=True),
             'min_impact': number('min_impact', int, 1, 5), 'max_events': number('max_events', int, 5, 200),
         }
+        if 'public_base_url' in form:
+            public_url = form['public_base_url'].rstrip('/')
+            if public_url:
+                from .digest import render_push
+                try:
+                    render_push([], public_url)
+                except ValueError:
+                    errors.append('简报公网地址必须是 http(s) 地址，不含账号密码、查询参数或片段')
+            values['public_base_url'] = public_url
         for secret_key in ('llm_api_key', 'embedding_api_key'):
             if form.get(secret_key):
                 if any(c in form[secret_key] for c in '\r\n '):

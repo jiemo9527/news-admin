@@ -16,7 +16,7 @@ from dotenv import dotenv_values
 from . import tz
 from .config import Settings, update_env_file
 from .models import Event
-from .store import Store
+from .store import Store, PUSH_BRIEFS_SCHEMA
 
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
@@ -139,6 +139,8 @@ def restore_backup(rt, payload: bytes) -> dict:
                         if src.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                             raise ValueError('数据库完整性检查失败')
                         expected = {r[0]: r[1] for r in live.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+                        # v2 旧备份缺少新增的推送汇总表；只添加这一已知结构，再做严格比对。
+                        src.executescript(PUSH_BRIEFS_SCHEMA)
                         actual = {r[0]: r[1] for r in src.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
                         if actual != expected or src.execute("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')").fetchone()[0]:
                             raise ValueError('数据库结构不兼容')
@@ -148,6 +150,9 @@ def restore_backup(rt, payload: bytes) -> dict:
                             raise ValueError('备份中没有可登录的管理员')
                         for row in src.execute('SELECT payload_json FROM events'):
                             Event.model_validate_json(row[0])
+                        for payload, in src.execute('SELECT payload_json FROM push_briefs'):
+                            for event in json.loads(payload):
+                                Event.model_validate(event)
                         saved = dict(src.execute('SELECT key,value FROM settings'))
                         for key, default in (('schedule_cron', '0 */2 * * *'), ('push_cron', '0 6,20 * * *')):
                             CronTrigger.from_crontab(saved.get(key, default), timezone=tz.TZ)

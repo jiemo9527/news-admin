@@ -107,10 +107,17 @@ def send(kind: str, config: dict[str, Any], text: str, subject: str = '新闻简
     if kind == 'email':
         _send_email(config, subject, text)
         return 1
-    chunks = split_chunks(text, spec['limit'])
+    first_line, separator, rest = text.partition('\n')
+    link = first_line if first_line.startswith(('https://', 'http://')) else ''
+    limit = spec['limit']
+    if link and len(link) + 32 >= limit:
+        raise ValueError('简报链接过长，无法分段发送')
+    chunks = split_chunks(rest.lstrip('\n'), limit - len(link) - 32) if link else split_chunks(text, limit)
     with httpx.Client(timeout=20, transport=transport) as client:
         for index, chunk in enumerate(chunks, 1):
             body = f'[{index}/{len(chunks)}]\n{chunk}' if len(chunks) > 1 else chunk
+            if link:
+                body = link + '\n\n' + body
             if kind == 'telegram':
                 payload: dict[str, Any] = {'chat_id': config['chat_id'], 'text': body, 'disable_web_page_preview': True}
                 if config.get('thread_id'):

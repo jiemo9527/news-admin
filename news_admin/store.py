@@ -61,6 +61,13 @@ def _sources_text(event: Event) -> str:
 def _like_escape(term: str) -> str:
     return term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
+PUSH_BRIEFS_SCHEMA = """CREATE TABLE IF NOT EXISTS push_briefs (
+    id TEXT PRIMARY KEY,
+    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,6 +192,7 @@ class Store:
         self.path = path
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+            conn.executescript(PUSH_BRIEFS_SCHEMA)
             columns = {row[1] for row in conn.execute('PRAGMA table_info(sources)')}
             if 'kind' not in columns:
                 conn.execute("ALTER TABLE sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'rss'")
@@ -666,6 +674,22 @@ class Store:
     def delete_user(self, user_id: int) -> None:
         with self._conn() as conn:
             conn.execute('DELETE FROM users WHERE id=?', (user_id,))
+
+    def save_push_brief(self, run_id: int, events: list[Event]) -> str:
+        import secrets
+        key = secrets.token_hex(12)
+        with self._conn() as conn:
+            conn.execute('INSERT INTO push_briefs(id,run_id,created_at,payload_json) VALUES (?,?,?,?)',
+                         (key, run_id, _now(), json.dumps([e.model_dump(mode='json') for e in events], ensure_ascii=False)))
+        return key
+
+    def get_push_brief(self, key: str) -> dict | None:
+        rows = self._rows('SELECT * FROM push_briefs WHERE id=?', (key,))
+        if not rows:
+            return None
+        row = rows[0]
+        row['events'] = [Event.model_validate(e) for e in json.loads(row.pop('payload_json'))]
+        return row
 
     # ---------- settings kv ----------
     def get_setting(self, key: str, default: str = '') -> str:

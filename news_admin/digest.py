@@ -68,3 +68,24 @@ def render_text(events: list[Event], web_url: str = '', title: str = '新闻简�
     if web_url:
         blocks.append(f'完整版：{web_url}')
     return '\n\n'.join(blocks)
+
+
+
+def render_push(events: list[Event], web_url: str) -> str:
+    """所有外部推送共用精简格式，权重指综合排序分；完整正文只留在网页。"""
+    from urllib.parse import urlsplit
+    from .rank import _grade
+
+    parsed = urlsplit(web_url)
+    parsed.port  # urllib 在访问 port 时才校验数值和范围；无效地址抛 ValueError。
+    if (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username is not None
+            or parsed.query or parsed.fragment or any(c.isspace() for c in web_url)):
+        raise ValueError('请设置有效的简报公网地址 NEWS_PUBLIC_BASE_URL')
+    blocks = [web_url]
+    for index, event in enumerate(sorted(events, key=lambda e: e.score, reverse=True), 1):
+        title = event.summary.headline if event.summary else (event.lead_analysis.title_zh if event.lead_analysis else event.lead.title)
+        title = ' '.join(title.split())
+        impact = event.lead_analysis.impact if event.lead_analysis else 2
+        grade = event.rating.grade if event.rating else _grade(event.score, impact)
+        blocks.append(f'{index}. {title}｜评级 {grade}｜权重 {event.score:.2f}')
+    return '\n\n'.join(blocks)

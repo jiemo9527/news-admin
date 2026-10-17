@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from .analyze import analyze_articles, make_continuity_judge, make_judge
 from .cluster import ClusterConfig
 from .config import Settings, get_settings
-from .digest import render_text
+from .digest import render_push
 from .embeddings import EmbeddingClient, HashingEmbedder
 from . import fetch as _fetch
 from . import tz
@@ -177,8 +177,12 @@ class Runtime:
                 events = events[:self.max_events()]
                 if not events:
                     continue
-                text = render_text(events, title='新闻简报 · ' + tz.now().strftime('%m-%d %H:%M'))
                 try:
+                    base = self.settings.public_base_url.rstrip('/')
+                    # 必须先校验公网地址，再创建与消息一一对应的汇总快照。
+                    render_push(events, base + '/briefs/push/check' if base else '')
+                    brief_key = self.store.save_push_brief(latest['id'], events)
+                    text = render_push(events, f'{base}/briefs/push/{brief_key}')
                     send(channel['kind'], channel['config'], text, subject='新闻简报 · ' + tz.now().strftime('%m-%d %H:%M'))
                     self.store.record_delivery(latest['id'], channel['id'], 'sent')
                     self.store.set_setting(key, until)
@@ -202,11 +206,11 @@ class Runtime:
         results = []
         if not events:
             return results
-        text = render_text(events, web_url=self.publication_url(run_id), title=f'新闻简报 #{run_id}')
         for channel in self.store.list_channels(enabled_only=channel_ids is None):
             if channel_ids is not None and channel['id'] not in channel_ids:
                 continue
             try:
+                text = render_push(events, self.publication_url(run_id))
                 send(channel['kind'], channel['config'], text, subject=f'新闻简报 #{run_id}')
                 self.store.record_delivery(run_id, channel['id'], 'sent')
                 results.append({'channel': channel['name'], 'status': 'sent'})

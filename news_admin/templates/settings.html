@@ -56,6 +56,8 @@
     <datalist id="embedding-models"><option value="BAAI/bge-m3"><option value="Qwen/Qwen3-Embedding-0.6B"><option value="Qwen/Qwen3-Embedding-4B"><option value="Qwen/Qwen3-Embedding-8B"></datalist>
     <label class="field"><span>API Key {% if s.embedding_api_key %}<span class="muted">（已设置 ····{{ s.embedding_api_key[-4:] }}，留空不修改）</span>{% else %}<span class="text-warn">（未设置，使用字符哈希降级）</span>{% endif %}</span><input name="embedding_api_key" type="password" autocomplete="new-password" spellcheck="false"></label>
 
+    <h3 class="span-2 form-sub">推送链接</h3>
+    <label class="field span-2"><span>网站公网根地址（推送第一行链接，需登录查看）</span><input name="public_base_url" type="url" value="{{ s.public_base_url }}" placeholder="https://news.example.com" spellcheck="false"></label>
     <h3 class="span-2 form-sub">合并与收录</h3>
     <label class="field"><span>直接合并阈值（留空用默认 {{ '0.75' if rt.embedding_degraded else '0.86' }}）</span><input name="cluster_high" type="number" step="0.01" min="0.3" max="0.99" value="{{ s.cluster_high if s.cluster_high is not none else '' }}"></label>
     <label class="field"><span>交给模型判定的下限（留空用默认 {{ '0.40' if rt.embedding_degraded else '0.72' }}）</span><input name="cluster_low" type="number" step="0.01" min="0.2" max="0.95" value="{{ s.cluster_low if s.cluster_low is not none else '' }}"></label>

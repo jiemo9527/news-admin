@@ -15,7 +15,7 @@ def test_collect_never_pushes(tmp_path, monkeypatch):
 
 
 def test_scheduled_digest_uses_all_runs_and_per_channel_success_cursor(tmp_path, monkeypatch):
-    rt=build_runtime(Settings(data_dir=tmp_path, _env_file=None))
+    rt=build_runtime(Settings(data_dir=tmp_path, public_base_url='https://news.test', _env_file=None))
     rt.store.upsert_channel(None,'telegram','ok',{'bot_token':'a','chat_id':'1'})
     rt.store.upsert_channel(None,'telegram','fail',{'bot_token':'b','chat_id':'2'})
     for id in ('one','two'):
