@@ -9,7 +9,7 @@ TZ = ZoneInfo('Asia/Shanghai')
 FETCH_WINDOWS = {
     'today_yesterday': '昨天 0 点至今（北京时间）',
     '24h': '最近 24 小时',
-    '7d': '7×24 小时内（低速模式）',
+    '7d': '7×24 小时内（低速模式 · 不限条数）',
 }
 
 

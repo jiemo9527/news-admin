@@ -18,7 +18,7 @@ import re
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -206,6 +206,86 @@ def _list_html(client: httpx.Client, source: Source) -> list[_Entry]:
 LISTERS = {'rss': _list_rss, 'jsonfeed': _list_jsonfeed, 'cctv': _list_cctv, 'html': _list_html}
 
 
+def _next_list_url(response: httpx.Response, kind: str) -> str:
+    """只跟随来源明确公布的下一页，不猜测 URL 或扩大到其他站点。"""
+    candidate = ''
+    if kind == 'jsonfeed':
+        candidate = response.json().get('next_url', '')
+    elif kind == 'rss':
+        parsed = feedparser.parse(response.content)
+        candidate = next((x.get('href', '') for x in parsed.feed.get('links', []) if x.get('rel') == 'next'), '')
+    elif kind == 'html':
+        soup = BeautifulSoup(response.content, 'lxml')
+        link = soup.select_one('a[rel~=next]')
+        if link is None:
+            link = next((a for a in soup.select('a[href]') if a.get_text(' ', strip=True).lower() in
+                         ('下一页', '下页', 'next', 'next page', 'older', 'older posts')), None)
+        candidate = link.get('href', '') if link else ''
+    if not isinstance(candidate, str) or not candidate:
+        return ''
+    try:
+        url = response.url.join(candidate).copy_with(fragment=None)
+        if url.scheme not in ('http', 'https') or url.host != response.url.host or url.port != response.url.port:
+            return ''
+        return str(url)
+    except (ValueError, httpx.InvalidURL):
+        return ''
+
+
+def _week_list(client: httpx.Client, source: Source, since: datetime, now: datetime) -> tuple[list[_Entry], str]:
+    from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+    # Google 新闻的 when:1d 会在来源端截掉六天，按自然日公开搜索，避免仅将本地过滤改成7天。
+    parsed = urlsplit(source.feed_url)
+    urls = [source.feed_url]
+    if parsed.hostname == 'news.google.com' and parsed.path == '/rss/search':
+        params = dict(parse_qsl(parsed.query))
+        query = re.sub(r'(?:when:|after:|before:)\S+', '', params.get('q', '')).strip()
+        day = tz.to_local(since).date()
+        urls = []
+        while day <= tz.to_local(now).date():
+            next_day = day + timedelta(days=1)
+            params['q'] = f'{query} after:{day.isoformat()} before:{next_day.isoformat()}'
+            urls.append(urlunsplit(parsed._replace(query=urlencode(params))))
+            day = next_day
+    entries = {}
+    visited = set()
+    captured = []
+    def remember(response):
+        response.read()
+        captured.append(response)
+    allowed_host = httpx.URL(source.feed_url).host
+    def guard(request):
+        if request.url.host != allowed_host:
+            raise ValueError('分页跳转离开来源站点，停止本来源')
+    client.event_hooks['request'].insert(0, guard)
+    client.event_hooks['response'].append(remember)
+    error = ''
+    try:
+        for first in urls:
+            url = first
+            while url and url not in visited:
+                visited.add(url)
+                captured.clear()
+                try:
+                    page = LISTERS[source.kind](client, replace(source, feed_url=url))
+                    response = captured[-1]
+                    next_url = _next_list_url(response, source.kind)
+                except (httpx.HTTPError, ValueError, SourceRateLimited) as exc:
+                    error = f'{type(exc).__name__}: {exc}'[:300]
+                    return list(entries.values()), error
+                new = [e for e in page if e.url and canonical_url(e.url) not in entries]
+                for entry in new:
+                    entries[canonical_url(entry.url)] = entry
+                # 重复页/空页/整页已越过时间窗即停止；不设文章或页数上限。
+                if not new or (page and all(e.published is not None and e.published < since for e in page)):
+                    break
+                url = next_url
+    finally:
+        client.event_hooks['response'].remove(remember)
+        client.event_hooks['request'].remove(guard)
+    return list(entries.values()), error
+
+
 # ---------- article page ----------
 
 _TITLE_SUFFIX_RE = re.compile(r'\s*(?:--|-|_|\|)\s*[^-_|]{1,12}(?:网|报|社|新闻|News|NEWS)\s*$')
@@ -328,7 +408,7 @@ def fetch_source(
     hooks = {'request': [pace.before], 'response': [pace.after]} if slow else None
     with httpx.Client(headers={'User-Agent': USER_AGENT}, timeout=20, follow_redirects=True, transport=transport, event_hooks=hooks) as client:
         try:
-            listed = lister(client, source)
+            listed, result.error = _week_list(client, source, since, now) if slow else (lister(client, source), '')
         except (httpx.HTTPError, ValueError, SourceRateLimited) as exc:
             result.error = f'{type(exc).__name__}: {exc}'[:300]
             return result
@@ -337,11 +417,12 @@ def fetch_source(
             return entry.published is None or entry.published >= since
 
         # 网页源的标题和时间要打开文章页才可靠，多取一些候选再按时间过滤
-        limit = source.max_items * (2 if is_html else 1)
+        # 7d 使用 slow=True：时间窗内全部候选，不沿用普通模式的每源条数限制。
+        limit = None if slow else source.max_items * (2 if is_html else 1)
         candidates = [e for e in listed if e.url and fresh(e) and (e.title or is_html)][:limit]
 
         def build(entry: _Entry) -> Article | None:
-            page = _fetch_page(client, entry.url) if (source.fetch_body or is_html) else _Page()
+            page = _fetch_page(client, entry.url) if (source.fetch_body or is_html) and not (slow and result.error) else _Page()
             # 精确时间优先；都只有日期时取页面
             if page.precision == 'exact' or (page.published and entry.precision != 'exact'):
                 published, precision = page.published, page.precision
@@ -368,7 +449,10 @@ def fetch_source(
             )
 
         if slow:
-            # 串行执行且达到每源上限即停止，不提前并行打开剩余文章。
+            if result.error:
+                # 列表翻页已触发限流时，不再打开正文；仍保留此前拿到的列表数据。
+                source = replace(source, fetch_body=False)
+            # 低速模式处理全部候选，触发限流即中止，保留已取得的条目。
             for entry in candidates:
                 try:
                     article = build(entry)
@@ -377,8 +461,6 @@ def fetch_source(
                     break
                 if article is not None:
                     result.articles.append(article)
-                if len(result.articles) >= source.max_items:
-                    break
         else:
             with ThreadPoolExecutor(max_workers=6) as pool:
                 result.articles = [a for a in pool.map(build, candidates) if a is not None][: source.max_items]
