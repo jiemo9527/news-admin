@@ -425,6 +425,8 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
   .pop-body { left: 0; right: auto; width: min(300px, calc(100vw - 48px)); }
 }
 
+.channel-card.is-off > :not(.card-actions) { opacity: .55; }
+.channel-card .card-actions form { display: inline; }
 .cred-panel { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .cred { margin: 0; padding: 12px 14px; background: var(--surface-2); border-radius: var(--radius-sm); font: 600 16px/1.7 var(--mono); letter-spacing: .03em; user-select: all; white-space: pre-wrap; word-break: break-all; }
 

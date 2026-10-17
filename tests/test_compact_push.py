@@ -30,11 +30,12 @@ def test_manual_and_scheduled_deliveries_use_compact_content_and_matching_url(tm
     assert '第一句' not in sent[-1]
     rt.deliver_digest()
     text=sent[-1]
-    assert '标题1' in text and '标题2' in text and '第一句' not in text
+    # 标题2 已手动推送过，定时汇总只发未推送过的标题1
+    assert '标题1' in text and '标题2' not in text and '第一句' not in text
     link=text.splitlines()[0]
     assert link.startswith('https://news.test/briefs/push/')
     response=client.get(link.replace('https://news.test',''))
-    assert response.status_code==200 and '标题1第一句' in response.text and '标题2第一句' in response.text
+    assert response.status_code==200 and '标题1第一句' in response.text and '标题2第一句' not in response.text
     guest=__import__('fastapi.testclient',fromlist=['TestClient']).TestClient(client.app)
     assert guest.get(link.replace('https://news.test',''),follow_redirects=False).status_code==303
 

@@ -36,4 +36,5 @@ def test_scheduled_digest_uses_all_runs_and_per_channel_success_cursor(tmp_path,
     assert rt.store.get_setting('push_cursor_1') and not rt.store.get_setting('push_cursor_2')
     texts.clear()
     results=rt.deliver_digest()
-    assert len(texts)==1 and [r['status'] for r in results]==['failed']
+    # 成功的渠道没有新内容，不再发送；失败的渠道下次重试
+    assert len(texts)==1 and [r['status'] for r in results]==['empty','failed']

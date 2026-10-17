@@ -14,8 +14,9 @@ def main(argv: list[str] | None = None) -> int:
     serve = sub.add_parser('serve', help='启动 Web 后台')
     serve.add_argument('--host', default='127.0.0.1')
     serve.add_argument('--port', type=int, default=5080)
-    run = sub.add_parser('run', help='执行一次流水线')
-    run.add_argument('--no-push', action='store_true', help='只生成简报，不推送')
+    run = sub.add_parser('run', help='抓取一次并生成简报（不推送）')
+    run.add_argument('--no-push', action='store_true', help='兼容旧参数；抓取从不推送')
+    sub.add_parser('push', help='按独立推送计划的逻辑立即推送一次汇总')
     show = sub.add_parser('show', help='打印某次运行的文本简报')
     show.add_argument('run_id', type=int, nargs='?')
     ev = sub.add_parser('eval', help='在标注数据上评测分类、聚类和摘要')
@@ -41,13 +42,16 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn.run(create_app(), host=args.host, port=args.port)
         return 0
 
-    from .runtime import build_runtime
+    from . import runtime as runtime_module
 
-    runtime = build_runtime()
+    runtime = runtime_module.build_runtime()
     if args.command == 'run':
-        run_id = runtime.pipeline.run('cli') if args.no_push else runtime.run_and_deliver('cli')
+        run_id = runtime.collect('cli')
         run = runtime.store.get_run(run_id)
         print(json.dumps({'run_id': run_id, 'status': run['status'], 'stats': run['stats']}, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == 'push':
+        print(json.dumps(runtime.deliver_digest(), ensure_ascii=False, indent=2))
         return 0
     if args.command == 'show':
         from .digest import render_text

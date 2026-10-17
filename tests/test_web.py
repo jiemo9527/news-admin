@@ -55,7 +55,7 @@ def test_admin_pages_render_and_channel_secret_is_kept_when_blank(tmp_path):
         assert client.get(path).status_code == 200, path
     client.post('/admin/channels', data={'kind': 'telegram', 'name': 'tg', 'bot_token': 'SECRET', 'chat_id': '1', 'enabled': '1'})
     channel = rt.store.list_channels()[0]
-    client.post('/admin/channels', data={'kind': 'telegram', 'channel_id': channel['id'], 'name': 'tg2', 'bot_token': '', 'chat_id': '2', 'enabled': '1'})
+    client.post(f"/admin/channels/{channel['id']}", data={'name': 'tg2', 'bot_token': '', 'chat_id': '2', 'enabled': '1'})
     updated = rt.store.list_channels()[0]
     assert updated['config'] == {'bot_token': 'SECRET', 'chat_id': '2', 'thread_id': ''} and updated['name'] == 'tg2'
 

@@ -16,7 +16,7 @@ from dotenv import dotenv_values
 from . import tz
 from .config import Settings, update_env_file
 from .models import Event
-from .store import Store, PUSH_BRIEFS_SCHEMA
+from .store import Store, PUSH_BRIEFS_SCHEMA, PUSHED_EVENTS_SCHEMA
 
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
@@ -131,6 +131,7 @@ def restore_backup(rt, payload: bytes) -> dict:
             # 内存中的事务回滚状态，仅存活到本次操作结束；不产生自动备份文件。
             old_images = None
             changed = False
+            backfill = False
             with closing(sqlite3.connect(':memory:')) as rollback:
                 try:
                     restored_settings = Settings(_env_file=env)
@@ -141,6 +142,8 @@ def restore_backup(rt, payload: bytes) -> dict:
                         expected = {r[0]: r[1] for r in live.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
                         # v2 旧备份缺少新增的推送汇总表；只添加这一已知结构，再做严格比对。
                         src.executescript(PUSH_BRIEFS_SCHEMA)
+                        backfill = not src.execute("SELECT 1 FROM sqlite_master WHERE name='pushed_events'").fetchone()
+                        src.executescript(PUSHED_EVENTS_SCHEMA)
                         actual = {r[0]: r[1] for r in src.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
                         if actual != expected or src.execute("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('trigger','view')").fetchone()[0]:
                             raise ValueError('数据库结构不兼容')
@@ -181,6 +184,8 @@ def restore_backup(rt, payload: bytes) -> dict:
                         src.backup(live)
                     rt.store = Store(rt.store.path)
                     rt.pipeline.store = rt.store
+                    if backfill:
+                        rt.store._backfill_pushed_events()
                     rt.apply_settings(old_settings.model_copy(update={k: getattr(restored_settings, k) for k in CONFIG_FIELDS}))
                     return result
                 except Exception as exc:
@@ -208,7 +213,7 @@ def clear_data(rt) -> dict:
         with rt.store._conn() as conn:
             removed = conn.execute('SELECT COUNT(*) FROM runs').fetchone()[0]
             conn.execute('DELETE FROM runs')
-            for table in ('events', 'event_urls', 'source_results', 'llm_calls', 'deliveries', 'access_log'):
+            for table in ('events', 'event_urls', 'source_results', 'llm_calls', 'deliveries', 'access_log', 'pushed_events'):
                 conn.execute(f'DELETE FROM {table}')
             conn.execute("DELETE FROM users WHERE role != 'admin'")
             conn.execute('UPDATE users SET last_login_at=NULL, last_seen_at=NULL, last_ip=\'\', session_version=session_version+1')

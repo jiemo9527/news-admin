@@ -12,7 +12,7 @@
     {% if run.status == 'completed' %}<a class="btn" href="/briefs/{{ run.id }}">查看简报</a>{% endif %}
     {% if admin %}
     {% if run.status in ('failed', 'stale') %}<form method="post" action="/admin/runs/{{ run.id }}/delete" onsubmit="return confirm('删除运行记录 #{{ run.id }}？')"><button class="btn btn-danger">删除记录</button></form>{% endif %}
-    {% if run.status == 'completed' %}<form method="post" action="/admin/runs/{{ run.id }}/deliver"><button class="btn btn-primary">重新推送</button></form>{% endif %}
+    {% if run.status == 'completed' %}<form method="post" action="/admin/runs/{{ run.id }}/deliver" onsubmit="return confirm('立即把本期简报推送到所有启用的渠道？\n这不受推送计划控制；推送过的新闻之后的定时推送不会重复发送。')"><button class="btn">手动推送本期</button></form>{% endif %}
     {% endif %}
   </div>
 </div>

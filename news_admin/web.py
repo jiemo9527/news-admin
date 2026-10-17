@@ -43,6 +43,7 @@ BASE = Path(__file__).resolve().parent
 PUBLIC_PATHS = ('/login', '/healthz', '/favicon.ico')
 PUBLIC_PREFIXES = ('/static/',)
 PER_PAGE = 20
+SECRET_CHANNEL_FIELDS = ('bot_token', 'webhook', 'secret', 'password')
 REPO_URL = 'https://github.com/jiemo9527/news-admin'
 
 
@@ -172,9 +173,17 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         if scheduler.get_job('push_digest'):
             scheduler.remove_job('push_digest')
         if rt.store.get_setting('push_enabled', '1') == '1':
-            scheduler.add_job(rt.deliver_digest,
+            scheduler.add_job(scheduled_push,
                 CronTrigger.from_crontab(rt.store.get_setting('push_cron', '0 6,20 * * *'), timezone=tz.TZ),
                 id='push_digest', coalesce=True, max_instances=1, misfire_grace_time=3600)
+
+    def scheduled_push() -> None:
+        log = logging.getLogger(__name__)
+        try:
+            for r in rt.deliver_digest():
+                log.info('scheduled push %s: %s %s', r['channel'], r['status'], r.get('count', '') or r.get('error', ''))
+        except Exception:
+            log.exception('scheduled push failed')
 
     def next_run_time(job_id='pipeline') -> str:
         job = scheduler.get_job(job_id) if scheduler.running else None
@@ -353,7 +362,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     @app.post('/admin/run')
     def trigger_run(request: Request):
         started = run_in_background('manual')
-        flash(request, '已开始运行，约 3-5 分钟完成，可刷新查看进度' if started else '已有任务在运行', 'success' if started else 'error')
+        flash(request, '已开始抓取（不推送），约 3-10 分钟完成，可刷新查看进度' if started else '已有抓取任务在运行', 'success' if started else 'error')
         return RedirectResponse('/admin', status_code=303)
 
     @app.post('/admin/schedule')
@@ -450,7 +459,9 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     @app.post('/admin/runs/{run_id}/deliver')
     def redeliver(request: Request, run_id: int):
         results = rt.deliver(run_id)
-        flash(request, '；'.join(f"{r['channel']}：{'成功' if r['status'] == 'sent' else '失败'}" for r in results) or '没有启用的推送渠道')
+        labels = {'sent': '成功', 'busy': '另一个推送正在进行，请稍后重试'}
+        flash(request, '；'.join(f"{r['channel']}：{labels.get(r['status'], '失败')}" for r in results) or '没有启用的推送渠道',
+              'error' if any(r['status'] != 'sent' for r in results) else 'success')
         return RedirectResponse(f'/admin/runs/{run_id}', status_code=303)
 
     presets = {p['feed_url']: p for p in [*ORIGINAL_SOURCES, *EXTRA_SOURCES]}
@@ -533,32 +544,101 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         target = request.headers.get('referer', '/briefs')
         return RedirectResponse('/briefs' if f'/briefs/{run_id}' in target or '/admin/runs/' in target else target, status_code=303)
 
+    def channel_view(channel: dict, admin: bool) -> dict:
+        """页面展示用：密钥字段只显示是否已设置；只读用户看不到任何配置值。"""
+        spec = CHANNEL_KINDS[channel['kind']]
+        view = {}
+        for field in spec['fields']:
+            value = str(channel['config'].get(field, ''))
+            secret = field in SECRET_CHANNEL_FIELDS
+            view[field] = {'set': bool(value), 'value': '' if (secret or not admin) else value, 'secret': secret}
+        return {**channel, 'view': view, 'config': None}
+
     @app.get('/admin/channels', response_class=HTMLResponse)
-    def channels(request: Request):
-        return page(request, 'channels.html', channels=rt.store.list_channels())
+    def channels(request: Request, edit: int | None = None, add: str = ''):
+        admin = request.state.user['role'] == 'admin'
+        items = [channel_view(c, admin) for c in rt.store.list_channels()]
+        last = {r['channel_id']: r for r in rt.store._rows(
+            'SELECT d.channel_id, d.status, d.error, d.created_at FROM deliveries d '
+            'JOIN (SELECT channel_id, MAX(id) AS id FROM deliveries GROUP BY channel_id) m ON m.id=d.id')}
+        cursors = {c['id']: rt.store.get_setting(f"push_cursor_{c['id']}") for c in items}
+        editing = next((c for c in items if c['id'] == edit), None) if admin else None
+        return page(request, 'channels.html', channels=items, editing=editing, add_kind=add if add in CHANNEL_KINDS and admin else '',
+                    last=last, cursors=cursors, test_result=request.session.pop('channel_test', None),
+                    push_cron=rt.store.get_setting('push_cron', '0 6,20 * * *'),
+                    push_enabled=rt.store.get_setting('push_enabled', '1') == '1', next_push=next_run_time('push_digest'))
+
+    def channel_config(form, kind: str, existing: dict | None) -> tuple[dict, list[str]]:
+        spec = CHANNEL_KINDS[kind]
+        config, missing = {}, []
+        for field in spec['fields']:
+            value = str(form.get(field, '')).strip()
+            if not value and existing and existing['config'].get(field) and (field in SECRET_CHANNEL_FIELDS or field in spec['required']):
+                value = existing['config'][field]  # 密钥/必填项留空 = 保持原值
+            if any(c in value for c in '\r\n'):
+                value = ''
+            config[field] = value
+            if field in spec['required'] and not value:
+                missing.append(spec['fields'][field])
+        return config, missing
 
     @app.post('/admin/channels')
-    async def save_channel(request: Request):
+    async def create_channel(request: Request):
         form = await request.form()
         kind = str(form.get('kind', ''))
         if kind not in CHANNEL_KINDS:
             raise HTTPException(400)
-        channel_id = int(form['channel_id']) if form.get('channel_id') else None
-        existing = rt.store.get_channel(channel_id) if channel_id else None
-        config = {}
-        for field in CHANNEL_KINDS[kind]['fields']:
-            value = str(form.get(field, '')).strip()
-            if not value and existing and field in existing['config']:
-                value = existing['config'][field]  # 留空表示不修改已保存的密钥
-            config[field] = value
-        rt.store.upsert_channel(channel_id, kind, str(form.get('name', '')).strip() or CHANNEL_KINDS[kind]['label'], config, form.get('enabled') == '1')
-        flash(request, '渠道已保存', 'success')
+        config, missing = channel_config(form, kind, None)
+        if missing:
+            flash(request, '请填写：' + '、'.join(missing), 'error')
+            return RedirectResponse(f'/admin/channels?add={kind}#form', status_code=303)
+        name = str(form.get('name', '')).strip()[:40] or CHANNEL_KINDS[kind]['label']
+        rt.store.upsert_channel(None, kind, name, config, form.get('enabled') == '1')
+        flash(request, f'已添加渠道「{name}」，可点击「测试」确认能收到消息', 'success')
+        return RedirectResponse('/admin/channels', status_code=303)
+
+    @app.post('/admin/channels/{channel_id}')
+    async def update_channel(request: Request, channel_id: int):
+        existing = rt.store.get_channel(channel_id)
+        if existing is None:
+            raise HTTPException(404)
+        form = await request.form()
+        config, missing = channel_config(form, existing['kind'], existing)
+        if missing:
+            flash(request, '请填写：' + '、'.join(missing), 'error')
+            return RedirectResponse(f'/admin/channels?edit={channel_id}#form', status_code=303)
+        name = str(form.get('name', '')).strip()[:40] or existing['name']
+        rt.store.upsert_channel(channel_id, existing['kind'], name, config, form.get('enabled') == '1')
+        flash(request, f'渠道「{name}」已保存', 'success')
+        return RedirectResponse('/admin/channels', status_code=303)
+
+    @app.post('/admin/channels/{channel_id}/toggle')
+    def toggle_channel(request: Request, channel_id: int):
+        channel = rt.store.get_channel(channel_id)
+        if channel:
+            rt.store.set_channel_enabled(channel_id, not channel['enabled'])
+            flash(request, f"渠道「{channel['name']}」已{'停用' if channel['enabled'] else '启用'}", 'success')
+        return RedirectResponse('/admin/channels', status_code=303)
+
+    @app.post('/admin/channels/{channel_id}/test')
+    def test_channel(request: Request, channel_id: int):
+        ok, message = rt.test_channel(channel_id)
+        request.session['channel_test'] = {'id': channel_id, 'ok': ok, 'message': message}
         return RedirectResponse('/admin/channels', status_code=303)
 
     @app.post('/admin/channels/{channel_id}/delete')
-    def delete_channel(channel_id: int):
+    def delete_channel(request: Request, channel_id: int):
         rt.store.delete_channel(channel_id)
+        flash(request, '渠道已删除', 'success')
         return RedirectResponse('/admin/channels', status_code=303)
+
+    @app.post('/admin/push-now')
+    def push_now(request: Request):
+        results = rt.deliver_digest()
+        labels = {'sent': '已推送', 'empty': '没有新内容', 'failed': '失败', 'busy': '另一个推送正在进行，请稍后重试'}
+        text = '；'.join(f"{r['channel']}：{labels.get(r['status'], r['status'])}{'（' + str(r['count']) + ' 条）' if r.get('count') else ''}" for r in results)
+        flash(request, text or '没有启用的推送渠道', 'error' if any(r['status'] == 'failed' for r in results) else 'success')
+        return RedirectResponse(request.headers.get('referer') or '/admin/channels', status_code=303)
 
     @app.get('/admin/settings', response_class=HTMLResponse)
     def settings_page(request: Request):

@@ -61,6 +61,13 @@ def _sources_text(event: Event) -> str:
 def _like_escape(term: str) -> str:
     return term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
+PUSHED_EVENTS_SCHEMA = """CREATE TABLE IF NOT EXISTS pushed_events (
+    channel_id INTEGER NOT NULL,
+    canonical_id TEXT NOT NULL,
+    sent_at TEXT NOT NULL,
+    PRIMARY KEY (channel_id, canonical_id)
+);"""
+
 PUSH_BRIEFS_SCHEMA = """CREATE TABLE IF NOT EXISTS push_briefs (
     id TEXT PRIMARY KEY,
     run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -193,6 +200,8 @@ class Store:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             conn.executescript(PUSH_BRIEFS_SCHEMA)
+            created = not conn.execute("SELECT 1 FROM sqlite_master WHERE name='pushed_events'").fetchone()
+            conn.executescript(PUSHED_EVENTS_SCHEMA)
             columns = {row[1] for row in conn.execute('PRAGMA table_info(sources)')}
             if 'kind' not in columns:
                 conn.execute("ALTER TABLE sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'rss'")
@@ -215,6 +224,8 @@ class Store:
                     for rowid, value in rows:
                         conn.execute(f'UPDATE {table} SET {col}=? WHERE rowid=?', (tz.iso(tz.parse(value)), rowid))
         self._backfill_feed_columns()
+        if created:
+            self._backfill_pushed_events()
 
     @contextmanager
     def _conn(self):
@@ -502,7 +513,10 @@ class Store:
         cutoff = tz.iso((tz.to_local(now) if now else tz.now()) - timedelta(days=retention_days))
         with self._conn() as conn:
             conn.execute('DELETE FROM access_log WHERE last_at < ?', (cutoff,))
-            return conn.execute("DELETE FROM runs WHERE started_at < ? AND status != 'running'", (cutoff,)).rowcount
+            removed = conn.execute("DELETE FROM runs WHERE started_at < ? AND status != 'running'", (cutoff,)).rowcount
+            # 事件还有任一版本在库时保留推送记录，避免长期持续更新的事件被再次推送
+            conn.execute('DELETE FROM pushed_events WHERE sent_at < ? AND canonical_id NOT IN (SELECT canonical_id FROM events)', (cutoff,))
+            return removed
 
     def load_events(self, run_id: int, brief_only: bool = True) -> list[Event]:
         """brief_only=True：只取进入该期简报的事件；False：该次运行入库的全部事件。"""
@@ -594,6 +608,87 @@ class Store:
     def delete_channel(self, channel_id: int) -> None:
         with self._conn() as conn:
             conn.execute('DELETE FROM channels WHERE id=?', (channel_id,))
+            conn.execute('DELETE FROM pushed_events WHERE channel_id=?', (channel_id,))
+            conn.execute('DELETE FROM settings WHERE key=?', (f'push_cursor_{channel_id}',))
+
+    def set_channel_enabled(self, channel_id: int, enabled: bool) -> None:
+        with self._conn() as conn:
+            conn.execute('UPDATE channels SET enabled=? WHERE id=?', (int(enabled), channel_id))
+
+    # ---------- 推送去重：同一渠道同一事件（含后续更新版本）只推送一次 ----------
+    def pushed_canonical_ids(self, channel_id: int) -> set[str]:
+        return {r['canonical_id'] for r in self._rows('SELECT canonical_id FROM pushed_events WHERE channel_id=?', (channel_id,))}
+
+    def canonical_ids(self, run_id: int, event_ids: list[str]) -> dict[str, str]:
+        marks = ','.join('?' * len(event_ids))
+        rows = self._rows(f'SELECT id, canonical_id FROM events WHERE run_id=? AND id IN ({marks})', (run_id, *event_ids)) if event_ids else []
+        return {r['id']: r['canonical_id'] for r in rows}
+
+    def mark_pushed(self, channel_id: int, canonical_ids) -> None:
+        now = _now()
+        with self._conn() as conn:
+            conn.executemany('INSERT OR IGNORE INTO pushed_events(channel_id, canonical_id, sent_at) VALUES (?,?,?)',
+                             [(channel_id, c, now) for c in canonical_ids if c])
+
+    def _backfill_pushed_events(self) -> None:
+        """从升级前的推送记录还原各渠道已推送事件（一次性迁移，只涉及旧版产生的数据）。
+
+        旧版推送全程持有同一把锁、逐个渠道顺序执行：定时汇总「保存快照 → 发送 → 写推送记录」，
+        手动推送不保存快照。因此每条推送记录只与「上一条推送记录之后、本条之前 2 分钟内、同一期」
+        的快照配对（单次发送远小于 2 分钟）：配上的是定时汇总，按快照内容记账；配不上的是手动推送整期。
+        失败的推送不记账。
+        """
+        with self._conn() as conn:
+            snaps = conn.execute('SELECT rowid, run_id, created_at, payload_json FROM push_briefs ORDER BY created_at').fetchall()
+            previous = ''
+            for run_id, channel_id, status, created in conn.execute(
+                    'SELECT run_id, channel_id, status, created_at FROM deliveries ORDER BY created_at, id').fetchall():
+                start = max(previous, tz.iso(tz.parse(created) - timedelta(minutes=2)))
+                match = next((x for x in reversed(snaps) if x[1] == run_id and start <= x[2] <= created and x[2] > previous), None)
+                previous = created
+                if status != 'sent':
+                    continue
+                if match:
+                    canon = []
+                    for event_id in [e['id'] for e in json.loads(match[3])]:
+                        row = conn.execute("SELECT canonical_id FROM events WHERE id=? AND run_id<=? AND canonical_id != '' "
+                                           'ORDER BY run_id DESC LIMIT 1', (event_id, run_id)).fetchone()
+                        if row:
+                            canon.append(row[0])
+                else:
+                    canon = [r[0] for r in conn.execute("SELECT canonical_id FROM events WHERE run_id=? AND in_brief=1 AND canonical_id != ''", (run_id,))]
+                conn.executemany('INSERT OR IGNORE INTO pushed_events VALUES (?,?,?)', [(channel_id, c, created) for c in canon])
+
+    def record_pushed(self, channel_id: int, canonical_ids, cursor: str | None = None) -> None:
+        """发送成功后的去重记录与推送进度：同一事务写入，二者要么都成功要么都不写。"""
+        now = _now()
+        with self._conn() as conn:
+            conn.executemany('INSERT OR IGNORE INTO pushed_events(channel_id, canonical_id, sent_at) VALUES (?,?,?)',
+                             [(channel_id, c, now) for c in canonical_ids if c])
+            if cursor:
+                conn.execute('INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                             (f'push_cursor_{channel_id}', cursor))
+
+    # ---------- 跨进程推送锁（网页定时任务与命令行 push 不会同时发送） ----------
+    LEASE_SECONDS = 1800
+
+    def acquire_lease(self, name: str, token: str | None = None, seconds: int | None = None) -> str | None:
+        """获取或续期（传入自己的 token）跨进程租约；被他人持有且未过期时返回 None。"""
+        import secrets
+        token = token or secrets.token_hex(8)
+        now = tz.now()
+        with self._conn() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT value FROM settings WHERE key=?', (f'lease_{name}',)).fetchone()
+            if row and row[0].split('|')[0] > tz.iso(now) and not row[0].endswith('|' + token):
+                return None
+            conn.execute("INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (f'lease_{name}', f'{tz.iso(now + timedelta(seconds=seconds or self.LEASE_SECONDS))}|{token}'))
+        return token
+
+    def release_lease(self, name: str, token: str) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM settings WHERE key=? AND value LIKE ?", (f'lease_{name}', f'%|{token}'))
 
     def record_delivery(self, run_id: int, channel_id: int, status: str, error: str = '') -> None:
         with self._conn() as conn:

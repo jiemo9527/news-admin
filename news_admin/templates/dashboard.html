@@ -3,8 +3,8 @@
 {% block content %}
 {% set last = runs | selectattr('status', 'equalto', 'completed') | first %}
 <div class="page-head">
-  <div><h1>概览</h1><p class="muted">流水线：抓取 → 去重 → 模型分析 → 价值过滤 → 事件聚类 → 前序关联 → 评级排序 → 摘要校验 → 配图 → 发布推送</p></div>
-  {% if admin %}<form method="post" action="/admin/run"><button class="btn btn-primary" {% if busy %}disabled{% endif %}>{{ '运行中…' if busy else '立即运行' }}</button></form>{% elif busy %}<span class="status status-running">运行中</span>{% endif %}
+  <div><h1>概览</h1><p class="muted">抓取流水线：抓取 → 去重 → 模型分析 → 价值过滤 → 事件聚类 → 前序关联 → 评级排序 → 摘要校验 → 配图 → 生成简报。推送由独立计划负责。</p></div>
+  {% if admin %}<form method="post" action="/admin/run" title="只抓取、入库、生成简报，不推送"><button class="btn btn-primary" {% if busy %}disabled{% endif %}>{{ '抓取中…' if busy else '立即抓取' }}</button></form>{% elif busy %}<span class="status status-running">运行中</span>{% endif %}
 </div>
 
 {% if rt.embedding_degraded %}<div class="alert alert-warn">未配置向量服务（NEWS_EMBEDDING_API_KEY），正在使用字符哈希向量，中英文同一事件可能无法合并。</div>{% endif %}
@@ -47,7 +47,7 @@
     {% else %}
     <p>{{ 'Cron ' ~ schedule_cron ~ '（已启用）' if schedule_enabled else '未启用' }}</p>
     {% endif %}
-    <p class="hint">例：<code>0 8,18 * * *</code> 每天 8:00、18:00；<code>0 */3 * * *</code> 每 3 小时。抓取只入库、生成简报，不会触发推送。</p>
+    <p class="hint">例：<code>0 */2 * * *</code> 每 2 小时；<code>0 8,18 * * *</code> 每天 8:00、18:00。<b>定时抓取只入库、生成简报，从不推送。</b></p>
   </section>
   <section class="panel">
     <h2>简报推送（独立计划）</h2>
@@ -58,12 +58,12 @@
       <button class="btn">保存</button>
     </form>
     {% else %}<p>{{ push_cron }} · {{ '启用' if push_enabled else '停用' }}</p>{% endif %}
-    <p class="hint">默认 <code>0 6,20 * * *</code>，每天早 6 点、晚 8 点。汇总上次成功推送以来的新结果，按评分取前 {{ rt.settings.max_events }} 条；其余留在首页，不排队补发。失败不前移进度。</p>
-    {% if next_push %}<p class="hint">下次推送 {{ next_push }}</p>{% endif %}
+    <p class="hint">默认 <code>0 6,20 * * *</code>。到点汇总上次推送后完成的所有抓取批次（最多回溯 48 小时），已推送过的事件及其更新不再重复，按评分取前 {{ rt.settings.max_events }} 条；没有新内容不发消息；失败下次重试。不等待正在进行的抓取。</p>
+    <div class="form-inline">{% if next_push %}<span class="hint">下次推送 {{ next_push }}</span>{% endif %}{% if admin %}<form method="post" action="/admin/push-now" onsubmit="return confirm('立即按推送计划的规则推送一次？')"><button class="btn">立即推送一次</button></form>{% endif %}</div>
   </section>
   <section class="panel">
     <h2>抓取范围</h2>
-    <p>{{ fetch_windows[fetch_window] }}，各来源只取此时间之后发布的新闻；与近 7 天已发布事件重复的不会再推送。</p>
+    <p>{{ fetch_windows[fetch_window] }}，各来源只取此时间之后发布的新闻；与近 7 天已入库事件相同且没有新报道的不会重复入库。</p>
     <p class="hint"><a href="/admin/settings">在系统设置中修改</a></p>
   </section>
 </div>
@@ -91,7 +91,7 @@
       <td class="actions"><a href="/admin/runs/{{ run.id }}">详情</a>{% if run.status == 'completed' %}<a href="/briefs/{{ run.id }}">简报</a>{% endif %}{% if admin and run.status in ('failed', 'stale') %}<form method="post" action="/admin/runs/{{ run.id }}/delete" onsubmit="return confirm('删除运行记录 #{{ run.id }}？')"><button class="link link-danger">删除</button></form>{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="11" class="empty-cell">还没有运行记录，点击右上角「立即运行」。</td></tr>
+    <tr><td colspan="11" class="empty-cell">还没有运行记录，点击右上角「立即抓取」。</td></tr>
     {% endfor %}
     </tbody>
   </table>

@@ -2,39 +2,62 @@
 {% block admin_title %}推送渠道{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>推送渠道</h1><p class="muted">每次运行完成后，把文字版简报推送到已启用的渠道。</p></div>
+  <div><h1>推送渠道</h1><p class="muted">只有「简报推送（独立计划）」会自动推送：{% if push_enabled %}<code>{{ push_cron }}</code>{% if next_push %}，下次 {{ next_push }}{% endif %}{% else %}已停用{% endif %}。定时抓取从不推送。<a href="/admin">修改计划</a></p></div>
+  {% if admin and channels %}<form method="post" action="/admin/push-now" onsubmit="return confirm('立即按推送计划的规则推送一次？')"><button class="btn">立即推送一次</button></form>{% endif %}
 </div>
+
+{% if test_result %}<div class="alert {{ 'alert-success' if test_result.ok else 'alert-error' }}">测试：{{ test_result.message }}</div>{% endif %}
+
 <section class="panel">
-  <div class="table-wrap">
-  <table class="table">
-    <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>状态</th><th></th></tr></thead>
+  <h2>已保存的渠道 <small class="muted">{{ channels | length }} 个</small></h2>
+  {% if channels %}
+  <div class="preset-grid channel-grid">
     {% for c in channels %}
-    <tr>
-      <td>{{ c.id }}</td><td><b>{{ c.name }}</b></td><td>{{ channel_kinds[c.kind].label }}</td>
-      <td><span class="status {{ 'status-completed' if c.enabled else 'status-stale' }}">{{ '启用' if c.enabled else '停用' }}</span></td>
-      <td class="actions">{% if admin %}<form method="post" action="/admin/channels/{{ c.id }}/delete" onsubmit="return confirm('删除渠道？')"><button class="link link-danger">删除</button></form>{% endif %}</td>
-    </tr>
-    {% else %}<tr><td colspan="5" class="empty-cell">还没有渠道，在下方选择一种添加。</td></tr>{% endfor %}
-  </table>
-  </div>
-</section>
-{% if admin %}
-<div class="grid-2">
-{% for kind, spec in channel_kinds.items() %}
-<details class="panel collapsible">
-  <summary><h2>{{ spec.label }}</h2></summary>
-  <form method="post" action="/admin/channels" class="form-stack">
-    <input type="hidden" name="kind" value="{{ kind }}">
-    <label class="field"><span>ID（修改时填写；密钥类字段留空表示不修改）</span><input name="channel_id" type="number" inputmode="numeric"></label>
-    <label class="field"><span>名称</span><input name="name" value="{{ spec.label }}"></label>
-    {% for field, label in spec.fields.items() %}
-    <label class="field"><span>{{ label }}{% if field in spec.required %} *{% endif %}</span><input name="{{ field }}" spellcheck="false" {% if field in ('password', 'secret', 'bot_token') %}type="password" autocomplete="new-password"{% endif %}></label>
+    {% set l = last.get(c.id) %}
+    <article class="preset channel-card{% if not c.enabled %} is-off{% endif %}">
+      <div class="preset-main"><b>{{ c.name }}</b><span class="status {{ 'status-completed' if c.enabled else 'status-stale' }}">{{ '启用' if c.enabled else '停用' }}</span></div>
+      <p class="muted small">{{ channel_kinds[c.kind].label }}
+        {% for field, label in channel_kinds[c.kind].fields.items() if field in channel_kinds[c.kind].required %} · {{ label }} {% if c.view[field].secret or not admin %}{{ '已设置' if c.view[field].set else '未设置' }}{% else %}<code>{{ c.view[field].value }}</code>{% endif %}{% endfor %}</p>
+      <p class="muted small">{% if l %}最近推送 {{ local_time(l.created_at, '%m-%d %H:%M') }} · <span class="{{ 'text-error' if l.status != 'sent' else '' }}">{{ '成功' if l.status == 'sent' else '失败' }}</span>{% if l.error %} <span class="text-error" title="{{ l.error }}">{{ l.error[:40] }}</span>{% endif %}{% else %}尚未推送{% endif %}</p>
+      {% if admin %}
+      <div class="card-actions">
+        <a class="btn btn-ghost" href="/admin/channels?edit={{ c.id }}#form">编辑</a>
+        <form method="post" action="/admin/channels/{{ c.id }}/test"><button class="btn btn-ghost">测试</button></form>
+        <form method="post" action="/admin/channels/{{ c.id }}/toggle"><button class="btn btn-ghost">{{ '停用' if c.enabled else '启用' }}</button></form>
+        <form method="post" action="/admin/channels/{{ c.id }}/delete" onsubmit="return confirm('删除渠道「{{ c.name }}」？其推送历史也会清除。')"><button class="btn btn-ghost link-danger">删除</button></form>
+      </div>
+      {% endif %}
+    </article>
     {% endfor %}
-    <label class="switch"><input type="checkbox" name="enabled" value="1" checked><span>启用</span></label>
-    <div><button class="btn btn-primary">保存</button></div>
+  </div>
+  {% else %}<p class="muted">还没有渠道{% if admin %}，在下方选择一种添加{% endif %}。</p>{% endif %}
+</section>
+
+{% if admin %}
+{% set kind = editing.kind if editing else add_kind %}
+{% if kind %}
+{% set spec = channel_kinds[kind] %}
+<section class="panel" id="form">
+  <h2>{{ '编辑渠道：' ~ editing.name if editing else '添加' ~ spec.label }}</h2>
+  <form method="post" action="{{ '/admin/channels/' ~ editing.id if editing else '/admin/channels' }}" class="form-grid">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <label class="field span-2"><span>名称</span><input name="name" maxlength="40" value="{{ editing.name if editing else spec.label }}"></label>
+    {% for field, label in spec.fields.items() %}
+    {% set v = editing.view[field] if editing else none %}
+    <label class="field span-2"><span>{{ label }}{% if field in spec.required %} *{% endif %}
+      {% if v and v.secret and v.set %}<span class="muted">（已设置，留空保持不变）</span>{% endif %}</span>
+      <input name="{{ field }}" spellcheck="false" autocomplete="off" {% if field in ('password', 'secret', 'bot_token') %}type="password" autocomplete="new-password"{% endif %}
+        value="{{ v.value if v and not v.secret else '' }}" {% if field in spec.required and not (v and v.set) %}required{% endif %}
+        {% if field == 'chat_id' %}placeholder="群组/频道一般以 -100 开头"{% endif %}></label>
+    {% endfor %}
+    <label class="switch span-2"><input type="checkbox" name="enabled" value="1" {% if not editing or editing.enabled %}checked{% endif %}><span>启用</span></label>
+    <div class="span-2 form-actions"><button class="btn btn-primary">保存</button><a class="btn btn-ghost" href="/admin/channels">取消</a></div>
   </form>
-</details>
-{% endfor %}
-</div>
+</section>
+{% endif %}
+<section class="panel">
+  <h2>添加渠道</h2>
+  <div class="chips">{% for k, spec in channel_kinds.items() %}<a class="chip" href="/admin/channels?add={{ k }}#form" {% if add_kind == k %}aria-current="page"{% endif %}>+ {{ spec.label }}</a>{% endfor %}</div>
+</section>
 {% endif %}
 {% endblock %}
