@@ -58,3 +58,14 @@ code { background: var(--bg); padding: 0 4px; border-radius: 3px; }
 .previous { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--bg); font-size: 13px; }
 .previous .label { font-weight: 600; color: var(--accent); }
 .previous ul { margin: 2px 0 0; padding-left: 18px; }
+
+.grade { display: inline-block; min-width: 1.5em; padding: 0 5px; margin-right: 4px; border-radius: 4px; font-size: 13px; text-align: center; color: #fff; vertical-align: 2px; }
+.grade-S { background: #c0392b; } .grade-A { background: #d35400; } .grade-B { background: #2e86c1; } .grade-C { background: #95a5a6; }
+.rating { margin: 4px 0 6px; font-size: 12.5px; }
+.rating summary { cursor: pointer; color: var(--muted, #666); }
+.rating .dim { margin-left: 8px; white-space: nowrap; }
+.rating table { margin-top: 4px; border-collapse: collapse; }
+.rating td { padding: 2px 8px 2px 0; vertical-align: middle; }
+.rating td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rating td.bar { width: 90px; }
+.rating td.bar i { display: block; height: 6px; border-radius: 3px; background: var(--accent); }

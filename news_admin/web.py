@@ -24,7 +24,10 @@ from .models import TOPIC_LABELS
 from .pipeline import PipelineBusy
 from .push import CHANNEL_KINDS
 from .runtime import Runtime, build_runtime
-from .timefmt import format_time
+from .timefmt import created_updated, format_time
+from .digest import article_times
+from .rank import rate_event
+from datetime import datetime, timezone
 
 BASE = Path(__file__).resolve().parent
 PUBLIC_PREFIXES = ('/briefs', '/static', '/login', '/healthz', '/thumb/')
@@ -56,7 +59,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
 
     app = FastAPI(title='News Admin', docs_url=None, redoc_url=None, lifespan=lifespan)
     templates = Jinja2Templates(directory=str(BASE / 'templates'))
-    templates.env.globals.update(format_time=format_time, source_kinds=SOURCE_KINDS, topic_labels=TOPIC_LABELS, region_label=event_region_label, channel_kinds=CHANNEL_KINDS)
+    templates.env.globals.update(format_time=format_time, created_updated=created_updated, article_times=article_times, source_kinds=SOURCE_KINDS, topic_labels=TOPIC_LABELS, region_label=event_region_label, channel_kinds=CHANNEL_KINDS)
     app.mount('/static', StaticFiles(directory=str(BASE / 'static')), name='static')
 
     def run_in_background(trigger: str) -> bool:
@@ -116,6 +119,11 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         if not run or run['status'] != 'completed':
             raise HTTPException(404)
         events = rt.store.load_events(run_id)
+        # 早期快照没有存评级：按运行完成时刻补算（新鲜度相对当时，而不是现在）
+        finished = datetime.fromisoformat(run['finished_at']) if run.get('finished_at') else datetime.now(timezone.utc)
+        for event in events:
+            if event.rating is None:
+                event.rating = rate_event(event, finished)
         return page(request, 'brief.html', run=run, sections=build_sections(events))
 
     @app.get('/thumb/{key}')

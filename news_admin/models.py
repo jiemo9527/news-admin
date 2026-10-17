@@ -194,6 +194,24 @@ class EventSummary(_LLMOutput):
         return value.strip()
 
 
+class ScoreItem(BaseModel):
+    """排序分的一个维度。"""
+
+    key: str
+    label: str
+    value: str
+    points: float
+    max_points: float
+    detail: str = ''
+
+
+class Rating(BaseModel):
+    grade: Literal['S', 'A', 'B', 'C']
+    label: str
+    total: float
+    items: list[ScoreItem]
+
+
 class Event(BaseModel):
     """聚类后的事件。"""
 
@@ -203,10 +221,16 @@ class Event(BaseModel):
     summary: EventSummary | None = None
     summary_degraded: bool = False
     score: float = 0.0
+    rating: Rating | None = None
     is_update: bool = False
     thumbnail: str = ''
     story_id: str = ''
     previous: list[EventRef] = Field(default_factory=list)
+
+    def time_points(self) -> list[tuple[datetime, str]]:
+        points = [(a.published_at, a.time_precision) for a in self.articles if a.published_at]
+        points += [(a.updated_at, 'exact') for a in self.articles if a.updated_at]
+        return points
 
     @property
     def first_published(self) -> Article | None:

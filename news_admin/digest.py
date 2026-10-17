@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .models import REGION_LABELS, TOPIC_LABELS, Event, Topic
-from .timefmt import format_time
+from .timefmt import created_updated, format_time
 
 
 @dataclass
@@ -36,13 +36,19 @@ def build_sections(events: list[Event], top_n: int = 5) -> list[Section]:
     return sections
 
 
+def article_times(article) -> tuple[str, str]:
+    points = [(article.published_at, article.time_precision), (article.updated_at, 'exact')]
+    return created_updated([(t, p) for t, p in points if t])
+
+
 def event_text(event: Event) -> str:
     summary = event.summary
     headline = summary.headline if summary else event.lead.title
     tag = '【更新】' if event.is_update else ('【后续】' if event.previous else '')
-    first = event.first_published
-    when = format_time(first.published_at, first.time_precision) if first else '发布时间未知'
-    lines = [f'{tag}{headline}（{when}）']
+    created, updated = created_updated(event.time_points())
+    when = f'创建 {created}' + (f'；更新 {updated}' if updated else '')
+    grade = f'[{event.rating.grade}] ' if event.rating else ''
+    lines = [f'{grade}{tag}{headline}（{when}）']
     if summary:
         lines.append(''.join(s.text for s in summary.sentences))
         lines.extend(f'说法不一：{c}' for c in summary.conflicts)

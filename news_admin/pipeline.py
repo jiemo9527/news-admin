@@ -20,7 +20,7 @@ from .filtering import FilterConfig, filter_reason
 from .images import choose_image
 from .llm import LLMCall
 from .models import Article, ArticleAnalysis, Event, EventRef, EventSummary, Relation
-from .rank import score_event
+from .rank import rate_event
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -154,7 +154,8 @@ class Pipeline:
 
             now = self.deps.now()
             for event in events:
-                event.score = score_event(event, now)
+                event.rating = rate_event(event, now)
+                event.score = event.rating.total
             events.sort(key=lambda e: e.score, reverse=True)
             events = events[: self.deps.max_events]
 

@@ -108,7 +108,23 @@ def test_brief_shows_time_thumbnail_and_previous_coverage(tmp_path):
     html = client.get(f'/briefs/{run_id}').text
     assert f'/thumb/{key}' in html
     assert '前情' in html and '美联储降息25个基点' in html and '/briefs/1#e-old' in html
-    assert '刚刚' in html and '未注明时刻' in html
+    assert '创建 刚刚' in html and '未注明时刻' not in html and '创建 今天' in html
     response = client.get(f'/thumb/{key}')
     assert response.status_code == 200 and response.headers['content-type'] == 'image/webp'
     assert client.get('/thumb/' + 'b' * 32).status_code == 404
+
+
+def test_brief_shows_rating_breakdown(tmp_path):
+    from news_admin.rank import rate_event
+    rt, client = make_client(tmp_path)
+    run_id = rt.store.start_run('test')
+    a = Article(id='a', source='BBC', url='https://x/1', title='Fed', published_at=datetime.now(timezone.utc), time_precision='exact')
+    an = ArticleAnalysis(title_zh='t', region='international', topic='economy', topic_confidence=0.9, content_type='news', has_new_development=True,
+                         entities=[], key_facts=['f'], event_fingerprint='x', impact=4, impact_reason='影响美国货币政策')
+    e = Event(id='e1', articles=[a], analyses={'a': an}, summary=EventSummary.model_validate({'headline': '美联储降息', 'sentences': [{'text': '降息。', 'sources': [1]}]}))
+    e.rating = rate_event(e, datetime.now(timezone.utc)); e.score = e.rating.total
+    rt.store.save_events(run_id, [e]); rt.store.finish_run(run_id, 'completed', {})
+    html = client.get(f'/briefs/{run_id}').text
+    assert 'grade-A' in html and '评级 <b>A</b>' in html
+    for text in ('影响力', '4/5', '来源', '1 家', '新鲜度', '来源权重', '影响美国货币政策'):
+        assert text in html
