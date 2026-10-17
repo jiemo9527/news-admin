@@ -12,12 +12,13 @@
     <tr>
       <td>{{ c.id }}</td><td><b>{{ c.name }}</b></td><td>{{ channel_kinds[c.kind].label }}</td>
       <td><span class="status {{ 'status-completed' if c.enabled else 'status-stale' }}">{{ '启用' if c.enabled else '停用' }}</span></td>
-      <td class="actions"><form method="post" action="/admin/channels/{{ c.id }}/delete" onsubmit="return confirm('删除渠道？')"><button class="link link-danger">删除</button></form></td>
+      <td class="actions">{% if admin %}<form method="post" action="/admin/channels/{{ c.id }}/delete" onsubmit="return confirm('删除渠道？')"><button class="link link-danger">删除</button></form>{% endif %}</td>
     </tr>
     {% else %}<tr><td colspan="5" class="empty-cell">还没有渠道，在下方选择一种添加。</td></tr>{% endfor %}
   </table>
   </div>
 </section>
+{% if admin %}
 <div class="grid-2">
 {% for kind, spec in channel_kinds.items() %}
 <details class="panel collapsible">
@@ -35,4 +36,5 @@
 </details>
 {% endfor %}
 </div>
+{% endif %}
 {% endblock %}

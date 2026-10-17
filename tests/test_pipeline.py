@@ -172,3 +172,29 @@ def test_thumbnail_uses_first_article_with_usable_image(tmp_path):
     pipeline.deps.thumbnail = lambda url: 'k' * 32 if url == 'https://x/photo.jpg' else ''
     events = store.load_events(pipeline.run('manual'))
     assert events[0].thumbnail == 'k' * 32
+
+
+
+def test_all_events_are_stored_but_only_top_n_enter_the_brief(tmp_path):
+    store, pipeline = make_pipeline(tmp_path)
+    calls = []
+    original = pipeline.deps.summarize
+
+    def counting(articles, title, analysis=None):
+        calls.append(title)
+        return original(articles, title, analysis)
+
+    pipeline.deps.summarize = counting
+    pipeline.deps.max_events = lambda: 1
+    run_id = pipeline.run('manual')
+    everything = store.load_events(run_id, brief_only=False)
+    brief = store.load_events(run_id)
+    assert [e.in_brief for e in everything] == [True, False]
+    assert [e.summary.headline for e in brief] == ['美联储宣布降息']
+    assert calls == ['美联储宣布降息']                     # 简报外的事件不调用模型写摘要
+    quake = everything[1]
+    assert quake.summary.sentences and quake.summary_degraded is False   # 用中文关键事实作摘要
+    stats = store.get_run(run_id)['stats']
+    assert stats['events_stored'] == 2 and stats['events_published'] == 1
+    assert store.brief_index()[0]['events'] == 1
+    assert len(store.feed().events) == 2                       # 首页汇总包含全部入库事件

@@ -1,4 +1,7 @@
-"""FastAPI 后台：新闻汇总与简报（公开）+ 管理页面（需登录）。所有时间均为北京时间（东八区）。"""
+"""FastAPI 后台：新闻汇总、简报与管理页面，全部需要登录。所有时间均为北京时间（东八区）。
+
+角色：admin 管理员（全部功能）；viewer 只读用户（可浏览所有页面，不能做任何修改）。游客只能看到登录页。
+"""
 
 from __future__ import annotations
 
@@ -9,7 +12,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -20,6 +23,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import tz
+from .auth import ROLES, generate_password, generate_username, hash_password, validate_password, validate_username, verify_password
+from .config import Settings, update_env_file
 from .digest import article_times, build_sections, event_region_label
 from .fetch import SOURCE_KINDS
 from .models import CONTENT_TYPE_LABELS, REGION_LABELS, TOPIC_LABELS, Topic
@@ -32,10 +37,10 @@ from .store import FEED_RANGES, FEED_SORTS
 from .timefmt import created_updated, format_time
 
 BASE = Path(__file__).resolve().parent
-PUBLIC_PREFIXES = ('/briefs', '/static', '/login', '/healthz', '/thumb/', '/favicon.ico')
+PUBLIC_PATHS = ('/login', '/healthz', '/favicon.ico')
+PUBLIC_PREFIXES = ('/static/',)
 PER_PAGE = 20
 REPO_URL = 'https://github.com/jiemo9527/news-admin'
-MIN_PASSWORD = 8
 
 
 def highlight(text: str, q: str):
@@ -48,6 +53,19 @@ def highlight(text: str, q: str):
         return Markup(safe)
     pattern = re.compile('|'.join(re.escape(t) for t in terms), re.IGNORECASE)
     return Markup(pattern.sub(lambda m: f'<mark>{m.group(0)}</mark>', safe))
+
+
+def short_ua(ua: str) -> str:
+    """User-Agent → 「Chrome · Windows」这样的简称。"""
+    ua = ua or ''
+    if not ua:
+        return '—'
+    browser = next((name for key, name in (('Edg/', 'Edge'), ('OPR/', 'Opera'), ('MicroMessenger', '微信'), ('Firefox/', 'Firefox'),
+                                           ('Chrome/', 'Chrome'), ('Safari/', 'Safari'), ('curl/', 'curl'), ('python', 'Python'),
+                                           ('testclient', '测试客户端')) if key in ua), ua.split('/')[0][:20])
+    system = next((name for key, name in (('iPhone', 'iPhone'), ('iPad', 'iPad'), ('Android', 'Android'), ('Windows', 'Windows'),
+                                          ('Mac OS', 'macOS'), ('Linux', 'Linux')) if key in ua), '')
+    return f'{browser} · {system}' if system else browser
 
 
 def duration(start: str | None, end: str | None) -> str:
@@ -73,18 +91,30 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         rt.store.set_setting('secret_key', secret)
     password_file = settings.data_dir / 'admin_password.txt'
     password_pinned = bool(settings.admin_password)
-    if not password_pinned and not rt.store.get_setting('admin_password_hash') and not rt.store.get_setting('admin_password'):
-        initial = secrets.token_urlsafe(12)
-        rt.store.set_setting('admin_password', initial)
-        password_file.write_text(initial, encoding='utf-8')
 
-    def check_password(password: str) -> bool:
+    def bootstrap_admin() -> None:
+        """首次启动 / 从单密码版本升级：保证存在管理员账号。"""
+        admin = rt.store.get_user_by_name(settings.admin_username)
         if password_pinned:
-            return hmac.compare_digest(password, settings.admin_password)
-        stored_hash = rt.store.get_setting('admin_password_hash')
-        if stored_hash:
-            return hmac.compare_digest(_hash(password, stored_hash.split('$')[0]), stored_hash)
-        return hmac.compare_digest(password, rt.store.get_setting('admin_password'))
+            if admin is None:
+                rt.store.create_user(settings.admin_username, hash_password(settings.admin_password), 'admin')
+            elif not verify_password(settings.admin_password, admin['password_hash']) or admin['role'] != 'admin':
+                rt.store.update_user(admin['id'], password_hash=hash_password(settings.admin_password), role='admin', enabled=1)
+            return
+        if admin is not None:
+            return
+        legacy_hash = rt.store.get_setting('admin_password_hash')
+        legacy_plain = rt.store.get_setting('admin_password')
+        if legacy_hash:
+            rt.store.create_user(settings.admin_username, legacy_hash, 'admin')
+            password_file.unlink(missing_ok=True)
+        else:
+            initial = legacy_plain or secrets.token_urlsafe(12)
+            rt.store.create_user(settings.admin_username, hash_password(initial), 'admin')
+            password_file.write_text(initial, encoding='utf-8')
+        rt.store.set_setting('admin_password', '')
+
+    bootstrap_admin()
 
     scheduler = BackgroundScheduler(timezone=tz.TZ)
 
@@ -106,6 +136,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         feed_ranges=FEED_RANGES, feed_sorts=FEED_SORTS, fetch_windows=tz.FETCH_WINDOWS, repo_url=REPO_URL,
     )
     templates.env.filters['highlight'] = highlight
+    templates.env.filters['ua'] = short_ua
     app.mount('/static', StaticFiles(directory=str(BASE / 'static')), name='static')
 
     def run_in_background(trigger: str) -> bool:
@@ -135,19 +166,59 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         job = scheduler.get_job('pipeline') if scheduler.running else None
         return job.next_run_time.astimezone(tz.TZ).strftime('%m-%d %H:%M') if job and job.next_run_time else ''
 
+    def client_ip(request: Request) -> str:
+        if rt.settings.trust_proxy:
+            forwarded = request.headers.get('x-forwarded-for', '').split(',')[0].strip()
+            if forwarded:
+                return forwarded[:64]
+            real = request.headers.get('x-real-ip', '').strip()
+            if real:
+                return real[:64]
+        return (request.client.host if request.client else '')[:64]
+
+    def audit(request: Request, user: dict | None, event: str, username: str = '') -> None:
+        rt.store.log_access(
+            user['id'] if user else None, user['username'] if user else username, event, client_ip(request),
+            request.headers.get('user-agent', ''), request.url.path + (f'?{request.url.query}' if request.url.query else ''),
+        )
+
+    def current_user(request: Request) -> dict | None:
+        uid = request.session.get('uid')
+        if not uid:
+            return None
+        user = rt.store.get_user(uid)
+        if not user or not user['enabled'] or user['session_version'] != request.session.get('sv'):
+            request.session.clear()
+            return None
+        return user
+
     @app.middleware('http')
     async def require_login(request: Request, call_next):
         path = request.url.path
-        if path == '/' or path.startswith(PUBLIC_PREFIXES) or request.session.get('admin'):
+        if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
             return await call_next(request)
-        return RedirectResponse(f'/login?next={path}', status_code=303)
+        user = current_user(request)
+        if user is None:
+            target = request.url.path + (f'?{request.url.query}' if request.url.query else '')
+            return RedirectResponse('/login' + (f'?next={quote(target)}' if path != '/' else ''), status_code=303)
+        request.state.user = user
+        if request.method == 'GET' and not path.startswith('/thumb/'):
+            audit(request, user, 'visit')
+        # 只读用户：所有写操作（POST）一律拒绝，修改自己的密码除外
+        if request.method != 'GET' and user['role'] != 'admin' and path not in ('/logout', '/admin/password'):
+            return Response('只读用户无权执行此操作', status_code=403, media_type='text/plain; charset=utf-8')
+        if path.startswith('/admin/users') and user['role'] != 'admin':
+            return Response('仅管理员可访问', status_code=403, media_type='text/plain; charset=utf-8')
+        return await call_next(request)
 
     app.add_middleware(SessionMiddleware, secret_key=secret, same_site='lax', max_age=12 * 3600, https_only=False)
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
-        return templates.TemplateResponse(
-            request, name, {'rt': rt, 'admin': request.session.get('admin', False), 'path': request.url.path, **context}
-        )
+        user = getattr(request.state, 'user', None)
+        return templates.TemplateResponse(request, name, {
+            'rt': rt, 'user': user, 'admin': bool(user and user['role'] == 'admin'), 'signed_in': user is not None,
+            'path': request.url.path, **context,
+        })
 
     def flash(request: Request, message: str, kind: str = 'info') -> None:
         request.session['flash'] = {'text': message, 'kind': kind}
@@ -159,33 +230,34 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     # ---------- public ----------
     @app.get('/healthz')
     def healthz() -> dict[str, Any]:
-        latest = rt.store.latest_completed_run()
-        return {'ok': True, 'busy': rt.pipeline.busy, 'latest_run': latest['id'] if latest else None, 'time': tz.iso()}
+        return {'ok': True}
 
     @app.get('/', response_class=HTMLResponse)
-    def index(request: Request, q: str = '', range: str = 'all', sort: str = 'time', topic: str = ''):
+    def index(request: Request, q: str = '', range: str = 'all', sort: str = 'time', topic: str = '', source: str = ''):
         q = ' '.join(q.split())[:60]
+        source = source.strip()[:60]
         range_ = range if range in FEED_RANGES else 'all'
         sort = sort if sort in FEED_SORTS else 'time'
         topic = topic if topic in {t.value for t in Topic} else ''
         raw = request.query_params.get('page', '1')
         current = int(raw) if raw.isdigit() and int(raw) > 0 else 1
-        feed = rt.store.feed(range_=range_, q=q, page=current, per_page=PER_PAGE, sort=sort, topic=topic)
+        feed = rt.store.feed(range_=range_, q=q, page=current, per_page=PER_PAGE, sort=sort, topic=topic, source=source)
         if feed.total and feed.page > feed.pages:
-            feed = rt.store.feed(range_=range_, q=q, page=feed.pages, per_page=PER_PAGE, sort=sort, topic=topic)
+            feed = rt.store.feed(range_=range_, q=q, page=feed.pages, per_page=PER_PAGE, sort=sort, topic=topic, source=source)
         now = tz.now()
         for item in feed.items:
             ensure_rating(item.event, now)
-        defaults = {'q': '', 'range': 'all', 'sort': 'time', 'topic': '', 'page': 1}
+        defaults = {'q': '', 'range': 'all', 'sort': 'time', 'topic': '', 'source': '', 'page': 1}
 
         def url(**override: Any) -> str:
-            merged = {'q': q, 'range': range_, 'sort': sort, 'topic': topic, 'page': 1, **override}
+            merged = {'q': q, 'range': range_, 'sort': sort, 'topic': topic, 'source': source, 'page': 1, **override}
             query = {k: v for k, v in merged.items() if v != defaults[k]}
             return '/' + ('?' + urlencode(query) if query else '')
 
         return page(
-            request, 'feed.html', feed=feed, q=q, range_=range_, sort=sort, topic=topic, url=url,
-            topic_counts=rt.store.topic_counts(range_=range_, q=q), latest=rt.store.latest_completed_run(),
+            request, 'feed.html', feed=feed, q=q, range_=range_, sort=sort, topic=topic, source=source, url=url,
+            topic_counts=rt.store.topic_counts(range_=range_, q=q, source=source),
+            source_counts=rt.store.source_counts(range_=range_, q=q, topic=topic), latest=rt.store.latest_completed_run(),
             retention_days=int(rt.store.get_setting('retention_days', str(settings.retention_days))),
         )
 
@@ -218,21 +290,29 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         return Response(data, media_type=mime, headers={'Cache-Control': 'public, max-age=604800, immutable'})
 
     @app.get('/login', response_class=HTMLResponse)
-    def login_form(request: Request, next: str = '/admin'):
-        return page(request, 'login.html', next=next, password_pinned=password_pinned, initial_file=password_file.exists())
+    def login_form(request: Request, next: str = '/'):
+        return page(request, 'login.html', next=next, initial_file=password_file.exists())
 
     @app.post('/login')
-    def login(request: Request, username: str = Form(...), password: str = Form(...), next: str = Form('/admin')):
-        if hmac.compare_digest(username, settings.admin_username) and check_password(password):
-            request.session['admin'] = True
-            return RedirectResponse(next if next.startswith('/') and not next.startswith('//') else '/admin', status_code=303)
-        flash(request, '用户名或密码错误', 'error')
-        return RedirectResponse('/login', status_code=303)
+    def login(request: Request, username: str = Form(...), password: str = Form(...), next: str = Form('/')):
+        user = rt.store.get_user_by_name(username.strip())
+        if user and user['enabled'] and verify_password(password, user['password_hash']):
+            audit(request, user, 'login')
+            request.session.clear()
+            request.session.update({'uid': user['id'], 'sv': user['session_version']})
+            rt.store.touch_login(user['id'])
+            return RedirectResponse(next if next.startswith('/') and not next.startswith('//') else '/', status_code=303)
+        audit(request, None, 'login_failed', username.strip()[:64] or '（空）')
+        flash(request, '用户名或密码错误，或账号已停用', 'error')
+        return RedirectResponse('/login' + (f'?next={quote(next)}' if next and next != '/' else ''), status_code=303)
 
     @app.post('/logout')
     def logout(request: Request):
+        user = getattr(request.state, 'user', None)
+        if user:
+            audit(request, user, 'logout')
         request.session.clear()
-        return RedirectResponse('/', status_code=303)
+        return RedirectResponse('/login', status_code=303)
 
     # ---------- admin ----------
     @app.get('/admin', response_class=HTMLResponse)
@@ -270,7 +350,16 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         run = rt.store.get_run(run_id)
         if not run:
             raise HTTPException(404)
-        return page(request, 'run.html', run=run, events=rt.store.load_events(run_id), deliveries=rt.store.deliveries(run_id))
+        return page(request, 'run.html', run=run, events=rt.store.load_events(run_id, brief_only=False), deliveries=rt.store.deliveries(run_id))
+
+    @app.post('/admin/runs/{run_id}/delete')
+    def delete_run(request: Request, run_id: int):
+        run = rt.store.get_run(run_id)
+        if not run or run['status'] == 'running':
+            flash(request, '运行中的任务不能删除', 'error')
+        elif rt.store.delete_run(run_id):
+            flash(request, f'已删除运行记录 #{run_id}', 'success')
+        return RedirectResponse('/admin', status_code=303)
 
     @app.post('/admin/runs/{run_id}/deliver')
     def redeliver(request: Request, run_id: int):
@@ -391,6 +480,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             request, 'settings.html', password_pinned=password_pinned,
             fetch_window=rt.store.get_setting('fetch_window', settings.fetch_window),
             retention_days=rt.store.get_setting('retention_days', str(settings.retention_days)),
+            s=rt.settings, test_results=request.session.pop('conn_test', {}),
         )
 
     @app.post('/admin/settings')
@@ -403,29 +493,175 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         flash(request, '设置已保存，下次运行生效', 'success')
         return RedirectResponse('/admin/settings', status_code=303)
 
+    @app.post('/admin/settings/models')
+    async def save_models(request: Request):
+        form = {k: str(v).strip() for k, v in (await request.form()).items()}
+        current = rt.settings
+        errors: list[str] = []
+
+        def url(key: str) -> str:
+            value = form.get(key, '') or getattr(current, key)
+            if not re.match(r'^https?://[^\s]+$', value):
+                errors.append(f'{key} 必须是 http(s) 地址')
+            return value.rstrip('/')
+
+        def text(key: str) -> str:
+            value = form.get(key, '') or getattr(current, key)
+            if not re.match(r'^[\w./:@+\-]{1,120}$', value):
+                errors.append(f'{key} 含非法字符')
+            return value
+
+        def number(key: str, cast, lo, hi, optional=False):
+            raw = form.get(key, '')
+            if raw == '':
+                return None if optional else getattr(current, key)
+            try:
+                value = cast(raw)
+            except ValueError:
+                errors.append(f'{key} 不是有效数字')
+                return getattr(current, key)
+            if not lo <= value <= hi:
+                errors.append(f'{key} 需在 {lo}-{hi} 之间')
+            return value
+
+        values = {
+            'llm_base_url': url('llm_base_url'), 'llm_model': text('llm_model'),
+            'llm_concurrency': number('llm_concurrency', int, 1, 16),
+            'embedding_base_url': url('embedding_base_url'), 'embedding_model': text('embedding_model'),
+            'cluster_high': number('cluster_high', float, 0.3, 0.99, optional=True),
+            'cluster_low': number('cluster_low', float, 0.2, 0.95, optional=True),
+            'min_impact': number('min_impact', int, 1, 5), 'max_events': number('max_events', int, 5, 200),
+        }
+        for secret_key in ('llm_api_key', 'embedding_api_key'):
+            if form.get(secret_key):
+                if any(c in form[secret_key] for c in '\r\n '):
+                    errors.append(f'{secret_key} 含空白字符')
+                values[secret_key] = form[secret_key]
+        if values['cluster_high'] is not None and values['cluster_low'] is not None and values['cluster_low'] >= values['cluster_high']:
+            errors.append('合并阈值下限必须小于上限')
+        if errors:
+            flash(request, '；'.join(errors), 'error')
+            return RedirectResponse('/admin/settings#models', status_code=303)
+        env = {f'NEWS_{k.upper()}': (None if v is None else str(v)) for k, v in values.items()}
+        update_env_file(settings.env_path, env)
+        updated = current.model_copy(update=values)
+        rt.apply_settings(updated)
+        flash(request, '模型与向量配置已保存到 .env，立即生效', 'success')
+        return RedirectResponse('/admin/settings#models', status_code=303)
+
+    @app.post('/admin/settings/test/{target}')
+    def test_connection(request: Request, target: str):
+        if target not in ('llm', 'embedding'):
+            raise HTTPException(404)
+        ok, message = rt.test_llm() if target == 'llm' else rt.test_embedding()
+        results = request.session.get('conn_test', {})
+        results[target] = {'ok': ok, 'message': message}
+        request.session['conn_test'] = results
+        return RedirectResponse('/admin/settings#models', status_code=303)
+
     @app.post('/admin/password')
     def change_password(request: Request, current: str = Form(...), new: str = Form(...), confirm: str = Form(...)):
-        if password_pinned:
-            flash(request, '密码由环境变量 NEWS_ADMIN_PASSWORD 设置，请修改 .env', 'error')
-        elif not check_password(current):
+        user = request.state.user
+        if password_pinned and user['username'] == settings.admin_username:
+            flash(request, '管理员密码由环境变量 NEWS_ADMIN_PASSWORD 设置，请修改 .env', 'error')
+        elif not verify_password(current, user['password_hash']):
             flash(request, '当前密码不正确', 'error')
         elif new != confirm:
             flash(request, '两次输入的新密码不一致', 'error')
-        elif len(new) < MIN_PASSWORD:
-            flash(request, f'新密码至少 {MIN_PASSWORD} 位', 'error')
+        elif problem := validate_password(new):
+            flash(request, problem, 'error')
         else:
-            rt.store.set_setting('admin_password_hash', _hash(new))
-            rt.store.set_setting('admin_password', '')
-            password_file.unlink(missing_ok=True)
-            flash(request, '密码已修改，初始密码文件已删除', 'success')
+            rt.store.update_user(user['id'], password_hash=hash_password(new))
+            fresh = rt.store.get_user(user['id'])
+            request.session['sv'] = fresh['session_version']
+            if user['username'] == settings.admin_username:
+                password_file.unlink(missing_ok=True)
+            flash(request, '密码已修改', 'success')
         return RedirectResponse('/admin/settings', status_code=303)
+
+    @app.get('/admin/users', response_class=HTMLResponse)
+    def users_page(request: Request, log_user: int | None = None):
+        return page(
+            request, 'users.html', users=rt.store.list_users(), roles=ROLES,
+            credentials=request.session.pop('new_credentials', None),
+            access=rt.store.list_access(limit=200, user_id=log_user), log_user=log_user,
+        )
+
+    def show_credentials(request: Request, username: str, password: str, action: str) -> None:
+        # 只放在会话里显示一次，不入库、不写日志
+        request.session['new_credentials'] = {'username': username, 'password': password, 'action': action}
+
+    @app.post('/admin/users')
+    def create_user(request: Request, username: str = Form(''), password: str = Form(''), role: str = Form('viewer')):
+        username = username.strip()
+        generated = not password
+        if not username:
+            username = generate_username()
+            while rt.store.get_user_by_name(username):
+                username = generate_username()
+        password = password or generate_password()
+        problem = validate_username(username) or validate_password(password) or (None if role in ROLES else '角色无效')
+        if problem is None and rt.store.get_user_by_name(username):
+            problem = '用户名已存在'
+        if problem:
+            flash(request, problem, 'error')
+        else:
+            rt.store.create_user(username, hash_password(password), role)
+            if generated:
+                show_credentials(request, username, password, f'已创建{ROLES[role]}')
+            else:
+                flash(request, f'已创建{ROLES[role]}「{username}」', 'success')
+        return RedirectResponse('/admin/users', status_code=303)
+
+    def other_user(request: Request, user_id: int) -> dict | None:
+        target = rt.store.get_user(user_id)
+        if target is None:
+            flash(request, '用户不存在', 'error')
+        elif target['id'] == request.state.user['id']:
+            flash(request, '不能对自己执行此操作', 'error')
+            return None
+        return target
+
+    @app.post('/admin/users/{user_id}/role')
+    def change_role(request: Request, user_id: int, role: str = Form(...)):
+        target = other_user(request, user_id)
+        if target and role in ROLES:
+            rt.store.update_user(user_id, role=role)
+            flash(request, f"「{target['username']}」已改为{ROLES[role]}", 'success')
+        return RedirectResponse('/admin/users', status_code=303)
+
+    @app.post('/admin/users/{user_id}/toggle')
+    def toggle_user(request: Request, user_id: int):
+        target = other_user(request, user_id)
+        if target:
+            rt.store.update_user(user_id, enabled=0 if target['enabled'] else 1)
+            flash(request, f"「{target['username']}」已{'停用' if target['enabled'] else '启用'}", 'success')
+        return RedirectResponse('/admin/users', status_code=303)
+
+    @app.post('/admin/users/{user_id}/password')
+    def reset_password(request: Request, user_id: int, password: str = Form('')):
+        target = other_user(request, user_id)
+        if target:
+            generated = not password
+            password = password or generate_password()
+            if problem := validate_password(password):
+                flash(request, problem, 'error')
+            else:
+                rt.store.update_user(user_id, password_hash=hash_password(password))
+                if generated:
+                    show_credentials(request, target['username'], password, '已重置密码（原登录已失效）')
+                else:
+                    flash(request, f"已重置「{target['username']}」的密码，其已登录的会话失效", 'success')
+        return RedirectResponse('/admin/users', status_code=303)
+
+    @app.post('/admin/users/{user_id}/delete')
+    def delete_user(request: Request, user_id: int):
+        target = other_user(request, user_id)
+        if target:
+            rt.store.delete_user(user_id)
+            flash(request, f"已删除用户「{target['username']}」", 'success')
+        return RedirectResponse('/admin/users', status_code=303)
 
     return app
 
 
-def _hash(password: str, salt: str | None = None) -> str:
-    import hashlib
-
-    salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), 200_000).hex()
-    return f'{salt}${digest}'

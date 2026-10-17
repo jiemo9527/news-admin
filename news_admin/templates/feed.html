@@ -5,47 +5,51 @@
 <section class="feed-head">
   <div>
     <h1>新闻汇总</h1>
-    <p class="muted">
-      {% if latest %}最近更新 {{ local_time(latest.finished_at, '%m-%d %H:%M') }}{% endif %}
-    </p>
+    <p class="muted">{% if latest %}最近更新 {{ local_time(latest.finished_at, '%m-%d %H:%M') }}{% endif %}</p>
   </div>
 </section>
 
-<form class="filters" method="get" action="/" role="search">
+<form class="filters" method="get" action="/" role="search" data-live-form>
   <div class="search">
     <svg aria-hidden="true" viewBox="0 0 20 20" width="18" height="18"><path fill="currentColor" d="M8.5 3a5.5 5.5 0 0 1 4.38 8.83l3.65 3.64-1.06 1.06-3.64-3.65A5.5 5.5 0 1 1 8.5 3Zm0 1.5a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/></svg>
-    <input type="search" name="q" value="{{ q }}" placeholder="搜索标题、摘要、来源、人物或机构，空格分隔多个词" aria-label="关键词" maxlength="60" enterkeyhint="search">
-    {% if range_ != 'all' %}<input type="hidden" name="range" value="{{ range_ }}">{% endif %}
-    {% if sort != 'time' %}<input type="hidden" name="sort" value="{{ sort }}">{% endif %}
-    {% if topic %}<input type="hidden" name="topic" value="{{ topic }}">{% endif %}
-    {% if q %}<a class="search-clear" href="{{ url(q='') }}" aria-label="清除关键词">清除</a>{% endif %}
-    <button type="submit" class="btn btn-primary">搜索</button>
+    <input type="search" name="q" value="{{ q }}" placeholder="输入即筛选：标题、摘要、人物或机构，空格分隔多个词" aria-label="关键词" maxlength="60" enterkeyhint="search" autocomplete="off">
+    <select name="source" aria-label="新闻来源" data-live="sources">
+      <option value="">全部来源</option>
+      {% for name, n in source_counts.items() %}<option value="{{ name }}" {% if name == source %}selected{% endif %}>{{ name }}（{{ n }}）</option>{% endfor %}
+      {% if source and source not in source_counts %}<option value="{{ source }}" selected>{{ source }}（0）</option>{% endif %}
+    </select>
+    <input type="hidden" name="range" value="{{ range_ }}">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="topic" value="{{ topic }}">
+    <noscript><button type="submit" class="btn btn-primary">搜索</button></noscript>
   </div>
   <div class="filter-row">
     <nav class="segmented" aria-label="时间范围">
       {% for key, label in feed_ranges.items() %}
-      <a href="{{ url(range=key) }}" {% if key == range_ %}aria-current="page"{% endif %}>{{ label }}</a>
+      <a href="{{ url(range=key) }}" data-live-link {% if key == range_ %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
     <nav class="segmented segmented-sm" aria-label="排序">
       {% for key, label in feed_sorts.items() %}
-      <a href="{{ url(sort=key) }}" {% if key == sort %}aria-current="page"{% endif %}>{{ label }}</a>
+      <a href="{{ url(sort=key) }}" data-live-link {% if key == sort %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
     </nav>
   </div>
-  {% if topic_counts %}
-  <nav class="chips" aria-label="主题">
+  <nav class="chips" aria-label="主题" data-live="chips">
+    {% if topic_counts %}
     <a class="chip" href="{{ url(topic='') }}" {% if not topic %}aria-current="page"{% endif %}>全部主题</a>
     {% for t, label in topic_labels.items() if topic_counts.get(t.value) %}
     <a class="chip" href="{{ url(topic=t.value) }}" {% if topic == t.value %}aria-current="page"{% endif %}>{{ label }}<span class="chip-count">{{ topic_counts[t.value] }}</span></a>
     {% endfor %}
+    {% endif %}
   </nav>
-  {% endif %}
 </form>
 
+<div data-live="results">
 <p class="result-line">
-  共 <b>{{ feed.total }}</b> 条{% if q %}，关键词「{{ q }}」{% endif %}{% if range_ != 'all' %}，{{ feed_ranges[range_] }}{% endif %}{% if topic %}，{{ topic_labels[topic] if topic in topic_labels else topic }}{% endif %}
+  共 <b>{{ feed.total }}</b> 条{% if q %}，关键词「{{ q }}」{% endif %}{% if source %}，来源「{{ source }}」{% endif %}{% if range_ != 'all' %}，{{ feed_ranges[range_] }}{% endif %}{% if topic %}，{{ topic_labels[topic] if topic in topic_labels else topic }}{% endif %}
   {% if feed.pages > 1 %}<span class="muted">· 第 {{ feed.page }} / {{ feed.pages }} 页</span>{% endif %}
+  {% if q or source or topic or range_ != 'all' %}<a class="reset-link" href="/">清除筛选</a>{% endif %}
 </p>
 
 {% if feed.items %}
@@ -56,30 +60,31 @@
 <div class="empty">
   {% if latest %}
   <h2>没有符合条件的新闻</h2>
-  <p>换个关键词，或放宽时间范围试试。</p>
+  <p>换个关键词或来源，或放宽时间范围试试。</p>
   <a class="btn" href="/">查看全部</a>
   {% else %}
   <h2>还没有新闻</h2>
-  <p>登录管理后台，点击「立即运行」抓取第一批新闻。</p>
-  <a class="btn btn-primary" href="/login">进入管理</a>
+  <p>{% if admin %}到「管理」点击「立即运行」抓取第一批新闻。{% else %}等待管理员运行第一次抓取。{% endif %}</p>
   {% endif %}
 </div>
 {% endif %}
 
 {% if feed.pages > 1 %}
 <nav class="pager" aria-label="分页">
-  {% if feed.page > 1 %}<a class="pager-step" href="{{ url(page=feed.page - 1) }}" rel="prev">上一页</a>{% else %}<span class="pager-step disabled">上一页</span>{% endif %}
+  {% if feed.page > 1 %}<a class="pager-step" href="{{ url(page=feed.page - 1) }}" data-live-link rel="prev">上一页</a>{% else %}<span class="pager-step disabled">上一页</span>{% endif %}
   <span class="pager-pages">
   {% set ns = namespace(last=0) %}
   {% for n in range(1, feed.pages + 1) %}
     {% if n == 1 or n == feed.pages or (n - feed.page) | abs <= 1 %}
       {% if ns.last and n - ns.last > 1 %}<span class="pager-gap">…</span>{% endif %}
-      <a href="{{ url(page=n) }}" {% if n == feed.page %}aria-current="page"{% endif %}>{{ n }}</a>
+      <a href="{{ url(page=n) }}" data-live-link {% if n == feed.page %}aria-current="page"{% endif %}>{{ n }}</a>
       {% set ns.last = n %}
     {% endif %}
   {% endfor %}
   </span>
-  {% if feed.page < feed.pages %}<a class="pager-step" href="{{ url(page=feed.page + 1) }}" rel="next">下一页</a>{% else %}<span class="pager-step disabled">下一页</span>{% endif %}
+  {% if feed.page < feed.pages %}<a class="pager-step" href="{{ url(page=feed.page + 1) }}" data-live-link rel="next">下一页</a>{% else %}<span class="pager-step disabled">下一页</span>{% endif %}
 </nav>
 {% endif %}
+</div>
+<script src="/static/app.js?v=3" defer></script>
 {% endblock %}

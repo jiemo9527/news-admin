@@ -4,7 +4,7 @@
 {% set last = runs | selectattr('status', 'equalto', 'completed') | first %}
 <div class="page-head">
   <div><h1>概览</h1><p class="muted">流水线：抓取 → 去重 → 模型分析 → 价值过滤 → 事件聚类 → 前序关联 → 评级排序 → 摘要校验 → 配图 → 发布推送</p></div>
-  <form method="post" action="/admin/run"><button class="btn btn-primary" {% if busy %}disabled{% endif %}>{{ '运行中…' if busy else '立即运行' }}</button></form>
+  {% if admin %}<form method="post" action="/admin/run"><button class="btn btn-primary" {% if busy %}disabled{% endif %}>{{ '运行中…' if busy else '立即运行' }}</button></form>{% elif busy %}<span class="status status-running">运行中</span>{% endif %}
 </div>
 
 {% if rt.embedding_degraded %}<div class="alert alert-warn">未配置向量服务（NEWS_EMBEDDING_API_KEY），正在使用字符哈希向量，中英文同一事件可能无法合并。</div>{% endif %}
@@ -38,11 +38,15 @@
 <div class="grid-2">
   <section class="panel">
     <h2>定时运行</h2>
+    {% if admin %}
     <form method="post" action="/admin/schedule" class="form-inline">
       <label class="field grow"><span>Cron 表达式（北京时间）</span><input name="cron" value="{{ schedule_cron }}" placeholder="分 时 日 月 周" spellcheck="false"></label>
       <label class="switch"><input type="checkbox" name="enabled" value="1" {% if schedule_enabled %}checked{% endif %}><span>启用</span></label>
       <button class="btn">保存</button>
     </form>
+    {% else %}
+    <p>{{ 'Cron ' ~ schedule_cron ~ '（已启用）' if schedule_enabled else '未启用' }}</p>
+    {% endif %}
     <p class="hint">例：<code>0 8,18 * * *</code> 每天 8:00、18:00；<code>0 */3 * * *</code> 每 3 小时。</p>
   </section>
   <section class="panel">
@@ -72,7 +76,7 @@
       <td data-label="发布" class="num">{{ st.get('events_published', '-') }}</td>
       <td data-label="更新" class="num">{{ st.get('events_updated', '-') }}</td>
       <td data-label="Token" class="num">{{ '{:,}'.format(llm.values() | sum(attribute='prompt_tokens') + llm.values() | sum(attribute='completion_tokens')) }}</td>
-      <td class="actions"><a href="/admin/runs/{{ run.id }}">详情</a>{% if run.status == 'completed' %}<a href="/briefs/{{ run.id }}">简报</a>{% endif %}</td>
+      <td class="actions"><a href="/admin/runs/{{ run.id }}">详情</a>{% if run.status == 'completed' %}<a href="/briefs/{{ run.id }}">简报</a>{% endif %}{% if admin and run.status in ('failed', 'stale') %}<form method="post" action="/admin/runs/{{ run.id }}/delete" onsubmit="return confirm('删除运行记录 #{{ run.id }}？')"><button class="link link-danger">删除</button></form>{% endif %}</td>
     </tr>
     {% else %}
     <tr><td colspan="11" class="empty-cell">还没有运行记录，点击右上角「立即运行」。</td></tr>

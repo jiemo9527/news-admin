@@ -5,6 +5,7 @@
 <div class="grid-2">
   <section class="panel">
     <h2>抓取与保留</h2>
+    {% if admin %}
     <form method="post" action="/admin/settings" class="form-stack">
       <fieldset class="field">
         <legend>每次运行抓取的时间范围</legend>
@@ -16,30 +17,64 @@
       <p class="hint">超过保留期的运行记录、事件和缩略图在每次运行后自动清理。</p>
       <div><button class="btn btn-primary">保存设置</button></div>
     </form>
+    {% else %}
+    <dl class="kv"><dt>抓取范围</dt><dd>{{ fetch_windows[fetch_window] }}</dd><dt>保留天数</dt><dd>{{ retention_days }} 天</dd></dl>
+    {% endif %}
   </section>
   <section class="panel">
-    <h2>修改管理员密码</h2>
-    {% if password_pinned %}
+    <h2 id="password">修改我的密码 <small class="muted">{{ user.username }}</small></h2>
+    {% if password_pinned and user.username == rt.settings.admin_username %}
     <p>当前密码由环境变量 <code>NEWS_ADMIN_PASSWORD</code> 设置，请在 <code>.env</code> 中修改后重启服务。</p>
     {% else %}
     <form method="post" action="/admin/password" class="form-stack">
       <label class="field"><span>当前密码</span><input name="current" type="password" autocomplete="current-password" required></label>
       <label class="field"><span>新密码（至少 8 位）</span><input name="new" type="password" autocomplete="new-password" minlength="8" required></label>
       <label class="field"><span>确认新密码</span><input name="confirm" type="password" autocomplete="new-password" minlength="8" required></label>
-      <p class="hint">修改后初始密码文件 data/admin_password.txt 会被删除，新密码以加盐哈希保存。</p>
+      <p class="hint">密码以加盐哈希保存；修改后其他设备上的登录会失效。</p>
       <div><button class="btn btn-primary">修改密码</button></div>
     </form>
     {% endif %}
   </section>
 </div>
-<section class="panel">
+<section class="panel" id="models">
   <h2>模型与向量</h2>
+  {% for key, label in [('llm', '大模型'), ('embedding', '向量模型')] if test_results.get(key) %}
+  {% set r = test_results[key] %}<div class="alert {{ 'alert-success' if r.ok else 'alert-error' }}">{{ label }}连接测试：{{ r.message }}</div>
+  {% endfor %}
+  {% if admin %}
+  <form method="post" action="/admin/settings/models" class="form-grid">
+    <h3 class="span-2 form-sub">大模型（OpenAI 兼容接口）</h3>
+    <label class="field span-2"><span>接口地址</span><input name="llm_base_url" type="url" required value="{{ s.llm_base_url }}" spellcheck="false"></label>
+    <label class="field"><span>模型名</span><input name="llm_model" required value="{{ s.llm_model }}" spellcheck="false"></label>
+    <label class="field"><span>并发数（1-16）</span><input name="llm_concurrency" type="number" min="1" max="16" value="{{ s.llm_concurrency }}"></label>
+    <label class="field span-2"><span>API Key {% if s.llm_api_key %}<span class="muted">（已设置 ····{{ s.llm_api_key[-4:] }}，留空不修改）</span>{% else %}<span class="text-warn">（未设置）</span>{% endif %}</span><input name="llm_api_key" type="password" autocomplete="new-password" spellcheck="false"></label>
+
+    <h3 class="span-2 form-sub">向量模型（事件合并）</h3>
+    <label class="field span-2"><span>接口地址</span><input name="embedding_base_url" type="url" required value="{{ s.embedding_base_url }}" spellcheck="false"></label>
+    <label class="field"><span>模型名</span><input name="embedding_model" required value="{{ s.embedding_model }}" spellcheck="false" list="embedding-models"></label>
+    <datalist id="embedding-models"><option value="BAAI/bge-m3"><option value="Qwen/Qwen3-Embedding-0.6B"><option value="Qwen/Qwen3-Embedding-4B"><option value="Qwen/Qwen3-Embedding-8B"></datalist>
+    <label class="field"><span>API Key {% if s.embedding_api_key %}<span class="muted">（已设置 ····{{ s.embedding_api_key[-4:] }}，留空不修改）</span>{% else %}<span class="text-warn">（未设置，使用字符哈希降级）</span>{% endif %}</span><input name="embedding_api_key" type="password" autocomplete="new-password" spellcheck="false"></label>
+
+    <h3 class="span-2 form-sub">合并与收录</h3>
+    <label class="field"><span>直接合并阈值（留空用默认 {{ '0.75' if rt.embedding_degraded else '0.86' }}）</span><input name="cluster_high" type="number" step="0.01" min="0.3" max="0.99" value="{{ s.cluster_high if s.cluster_high is not none else '' }}"></label>
+    <label class="field"><span>交给模型判定的下限（留空用默认 {{ '0.40' if rt.embedding_degraded else '0.72' }}）</span><input name="cluster_low" type="number" step="0.01" min="0.2" max="0.95" value="{{ s.cluster_low if s.cluster_low is not none else '' }}"></label>
+    <label class="field"><span>最低影响力（1-5，低于此值不收录）</span><input name="min_impact" type="number" min="1" max="5" value="{{ s.min_impact }}"></label>
+    <label class="field"><span>每期简报条数（其余事件仍入库，首页可见）</span><input name="max_events" type="number" min="5" max="200" value="{{ s.max_events }}"></label>
+
+    <div class="span-2 form-actions"><button class="btn btn-primary">保存并生效</button></div>
+  </form>
+  <div class="form-actions">
+    <form method="post" action="/admin/settings/test/llm"><button class="btn">测试大模型连接</button></form>
+    <form method="post" action="/admin/settings/test/embedding"><button class="btn">测试向量连接</button></form>
+  </div>
+  <p class="hint">保存后写入服务器上的 <code>.env</code>（重启后保持），并立即用于下一次运行；正在运行的任务不受影响。更换向量模型后，旧向量缓存不再使用，合并阈值可能需要重新校准。</p>
+  {% else %}
   <dl class="kv">
-    <dt>大模型</dt><dd><code>{{ rt.settings.llm_model }}</code> · {{ rt.settings.llm_base_url }}</dd>
-    <dt>向量模型</dt><dd>{% if rt.embedding_degraded %}<span class="text-warn">未配置，使用字符哈希降级</span>{% else %}<code>{{ rt.settings.embedding_model }}</code> · {{ rt.settings.embedding_base_url }}{% endif %}</dd>
-    <dt>聚类阈值</dt><dd>≥ {{ rt.cluster_config().high }} 直接合并；{{ rt.cluster_config().low }}–{{ rt.cluster_config().high }} 交给模型判定</dd>
-    <dt>价值过滤</dt><dd>影响力低于 {{ rt.settings.min_impact }} 的不收录{% if rt.settings.drop_opinion %}；评论文章不收录{% endif %}</dd>
+    <dt>大模型</dt><dd><code>{{ s.llm_model }}</code> · {{ s.llm_base_url }}</dd>
+    <dt>向量模型</dt><dd>{% if rt.embedding_degraded %}<span class="text-warn">未配置，使用字符哈希降级</span>{% else %}<code>{{ s.embedding_model }}</code> · {{ s.embedding_base_url }}{% endif %}</dd>
+    <dt>合并阈值</dt><dd>≥ {{ rt.cluster_config().high }} 直接合并；{{ rt.cluster_config().low }}–{{ rt.cluster_config().high }} 交给模型判定</dd>
+    <dt>收录</dt><dd>影响力 ≥ {{ s.min_impact }}；每期简报 {{ s.max_events }} 条</dd>
   </dl>
-  <p class="hint">以上在 <code>.env</code> 中配置（NEWS_ 前缀），密钥不会显示在页面上。</p>
+  {% endif %}
 </section>
 {% endblock %}

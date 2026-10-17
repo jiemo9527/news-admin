@@ -9,8 +9,8 @@
     <label class="field"><span>密码</span><input name="password" type="password" autocomplete="current-password" autofocus required></label>
     <button class="btn btn-primary btn-block">登录</button>
   </form>
-  {% if not password_pinned and initial_file %}
-  <p class="hint">首次登录：初始密码在服务器的 <code>data/admin_password.txt</code> 中，登录后请到「系统设置」修改。</p>
+  {% if initial_file %}
+  <p class="hint">首次登录：初始密码在服务器的 <code>data/admin_password.txt</code> 中，管理员登录后请到「系统设置」修改。</p>
   {% endif %}
 </div>
 {% endblock %}

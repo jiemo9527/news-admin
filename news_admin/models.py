@@ -234,6 +234,7 @@ class Event(BaseModel):
     summary_degraded: bool = False
     score: float = 0.0
     rating: Rating | None = None
+    in_brief: bool = True
     is_update: bool = False
     thumbnail: str = ''
     story_id: str = ''

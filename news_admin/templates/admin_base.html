@@ -10,10 +10,17 @@
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 15a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm-1-5a7 7 0 0 1 7 7H8a5 5 0 0 0-5-5zm0-5a12 12 0 0 1 12 12h-2A10 10 0 0 0 3 7z"/></svg>新闻来源</a>
     <a href="/admin/channels" {% if path.startswith('/admin/channels') %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 9.5 18 3l-6.5 16-2.3-6.9z"/></svg>推送渠道</a>
+    {% if admin %}
+    <a href="/admin/users" {% if path.startswith('/admin/users') %}aria-current="page"{% endif %}>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm6 1a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1 17c0-3 2.7-5 6-5s6 2 6 5H1Zm13 0c0-1.6-.6-3-1.7-4 .2 0 .5-.1.7-.1 2.8 0 5 1.8 5 4.1H14Z"/></svg>用户管理</a>
+    {% endif %}
     <a href="/admin/settings" {% if path.startswith('/admin/settings') %}aria-current="page"{% endif %}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8.6 2h2.8l.4 2.2 1.5.8 2.1-.8 1.4 2.4-1.7 1.5v1.8l1.7 1.5-1.4 2.4-2.1-.8-1.5.8-.4 2.2H8.6l-.4-2.2-1.5-.8-2.1.8-1.4-2.4 1.7-1.5V8.1L3.2 6.6l1.4-2.4 2.1.8 1.5-.8zM10 7.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z"/></svg>系统设置</a>
     <form method="post" action="/logout" class="sidenav-logout"><button class="btn btn-ghost btn-block">退出登录</button></form>
   </aside>
-  <main class="admin-main">{% block content %}{% endblock %}</main>
+  <main class="admin-main">
+    {% if not admin %}<div class="alert alert-info">当前为只读账号：可以查看，不能运行、修改或删除。</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
 </div>
 {% endblock %}

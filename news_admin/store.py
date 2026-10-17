@@ -54,6 +54,10 @@ def _search_text(event: Event) -> str:
     return '\n'.join(parts).lower()
 
 
+def _sources_text(event: Event) -> str:
+    return '|' + '|'.join(event.sources) + '|'
+
+
 def _like_escape(term: str) -> str:
     return term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
@@ -138,6 +142,31 @@ CREATE TABLE IF NOT EXISTS deliveries (
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS access_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT NOT NULL,
+    event TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    hits INTEGER NOT NULL DEFAULT 1,
+    first_at TEXT NOT NULL,
+    last_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_access_last ON access_log(last_at);
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    session_version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_login_at TEXT,
+    last_ip TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT
+);
 """
 
 
@@ -161,8 +190,13 @@ class Store:
                 conn.execute("ALTER TABLE sources ADD COLUMN kind TEXT NOT NULL DEFAULT 'rss'")
             if 'link_pattern' not in columns:
                 conn.execute("ALTER TABLE sources ADD COLUMN link_pattern TEXT NOT NULL DEFAULT ''")
+            user_columns = {row[1] for row in conn.execute('PRAGMA table_info(users)')}
+            for column, ddl in (('last_ip', "TEXT NOT NULL DEFAULT ''"), ('last_seen_at', 'TEXT')):
+                if column not in user_columns:
+                    conn.execute(f'ALTER TABLE users ADD COLUMN {column} {ddl}')
             event_columns = {row[1] for row in conn.execute('PRAGMA table_info(events)')}
-            for column, ddl in (('canonical_id', "TEXT NOT NULL DEFAULT ''"), ('event_time', 'TEXT'), ('search_text', "TEXT NOT NULL DEFAULT ''")):
+            for column, ddl in (('canonical_id', "TEXT NOT NULL DEFAULT ''"), ('event_time', 'TEXT'), ('search_text', "TEXT NOT NULL DEFAULT ''"),
+                                ('in_brief', 'INTEGER NOT NULL DEFAULT 1'), ('sources_text', "TEXT NOT NULL DEFAULT ''")):
                 if column not in event_columns:
                     conn.execute(f'ALTER TABLE events ADD COLUMN {column} {ddl}')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_events_canonical ON events(canonical_id, run_id)')
@@ -342,7 +376,7 @@ class Store:
                 analysis = event.lead_analysis
                 conn.execute(
                     'INSERT INTO events(id, run_id, rank, score, headline, region, topic, degraded, is_update, payload_json, created_at, '
-                    'canonical_id, event_time, search_text) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    'canonical_id, event_time, search_text, in_brief, sources_text) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (
                         event.id, run_id, rank, event.score,
                         event.summary.headline if event.summary else event.lead.title,
@@ -351,6 +385,7 @@ class Store:
                         int(event.summary_degraded), int(event.is_update),
                         event.model_dump_json(), created,
                         self._canonical_id(conn, run_id, event), _event_time(event, created), _search_text(event),
+                        int(event.in_brief), _sources_text(event),
                     ),
                 )
                 for article in event.articles:
@@ -367,13 +402,14 @@ class Store:
             if rebuild:
                 conn.execute("UPDATE events SET canonical_id=''")
             rows = conn.execute(
-                "SELECT rowid, run_id, payload_json, created_at FROM events WHERE canonical_id='' OR event_time IS NULL OR search_text='' ORDER BY run_id, rank"
+                "SELECT rowid, run_id, payload_json, created_at FROM events "
+                "WHERE canonical_id='' OR event_time IS NULL OR search_text='' OR sources_text='' ORDER BY run_id, rank"
             ).fetchall()
             for rowid, run_id, payload, created in rows:
                 event = Event.model_validate_json(payload)
                 conn.execute(
-                    'UPDATE events SET canonical_id=?, event_time=?, search_text=? WHERE rowid=?',
-                    (self._canonical_id(conn, run_id, event), _event_time(event, created), _search_text(event), rowid),
+                    'UPDATE events SET canonical_id=?, event_time=?, search_text=?, sources_text=? WHERE rowid=?',
+                    (self._canonical_id(conn, run_id, event), _event_time(event, created), _search_text(event), _sources_text(event), rowid),
                 )
             conn.execute(
                 "INSERT INTO settings VALUES ('feed_index_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -388,7 +424,7 @@ class Store:
     )
 
     @staticmethod
-    def _feed_where(range_: str, q: str, topic: str, now: datetime) -> tuple[list[str], list]:
+    def _feed_where(range_: str, q: str, topic: str, now: datetime, source: str = '') -> tuple[list[str], list]:
         where, params = ["r.status='completed'"], []
         if range_ == 'today':
             where.append('e.event_time >= ?'); params.append(tz.iso(tz.day_start(now)))
@@ -400,17 +436,19 @@ class Store:
             where.append('e.event_time >= ?'); params.append(tz.iso(tz.day_start(now, 6)))
         if topic:
             where.append('e.topic = ?'); params.append(topic)
+        if source:
+            where.append("e.sources_text LIKE ? ESCAPE '\\'"); params.append(f'%|{_like_escape(source)}|%')
         for term in q.lower().split()[:8]:
             where.append("e.search_text LIKE ? ESCAPE '\\'"); params.append(f'%{_like_escape(term)}%')
         return where, params
 
     def feed(
         self, range_: str = 'all', q: str = '', page: int = 1, per_page: int = 20, sort: str = 'time', now: datetime | None = None,
-        topic: str = '',
+        topic: str = '', source: str = '',
     ) -> FeedPage:
         """首页汇总：所有已完成运行的事件，同一事件只取最新版本；按北京时间自然日筛选，关键词需全部命中。"""
         now = tz.to_local(now) if now else tz.now()
-        where, params = self._feed_where(range_, q, topic, now)
+        where, params = self._feed_where(range_, q, topic, now, source)
         base = self._LATEST_JOIN + 'WHERE ' + ' AND '.join(where)
         order = 'e.score DESC, e.event_time DESC' if sort == 'score' else 'e.event_time DESC, e.score DESC'
         page = max(1, page)
@@ -422,19 +460,30 @@ class Store:
         items = [FeedItem(run_id=int(r[0]), event=Event.model_validate_json(r[1])) for r in rows]
         return FeedPage(items=items, total=int(total), page=page, per_page=per_page)
 
-    def topic_counts(self, range_: str = 'all', q: str = '', now: datetime | None = None) -> dict[str, int]:
+    def topic_counts(self, range_: str = 'all', q: str = '', now: datetime | None = None, source: str = '') -> dict[str, int]:
         now = tz.to_local(now) if now else tz.now()
-        where, params = self._feed_where(range_, q, '', now)
+        where, params = self._feed_where(range_, q, '', now, source)
         rows = self._rows(
             f"SELECT e.topic, COUNT(*) AS n {self._LATEST_JOIN} WHERE {' AND '.join(where)} AND e.topic != '' GROUP BY e.topic",
             tuple(params),
         )
         return {r['topic']: r['n'] for r in rows}
 
+    def source_counts(self, range_: str = 'all', q: str = '', topic: str = '', now: datetime | None = None) -> dict[str, int]:
+        """首页「来源」下拉框：当前筛选条件下每个来源有多少条事件。"""
+        now = tz.to_local(now) if now else tz.now()
+        where, params = self._feed_where(range_, q, topic, now)
+        rows = self._rows(f"SELECT e.sources_text {self._LATEST_JOIN} WHERE {' AND '.join(where)}", tuple(params))
+        counts: dict[str, int] = {}
+        for row in rows:
+            for name in filter(None, row['sources_text'].split('|')):
+                counts[name] = counts.get(name, 0) + 1
+        return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
     def brief_index(self, limit: int = 100) -> list[dict]:
         return self._rows(
             "SELECT r.id, r.trigger, r.started_at, r.finished_at, "
-            "(SELECT COUNT(*) FROM events WHERE run_id=r.id) AS events, "
+            "(SELECT COUNT(*) FROM events WHERE run_id=r.id AND in_brief=1) AS events, "
             "(SELECT headline FROM events WHERE run_id=r.id ORDER BY rank LIMIT 1) AS top "
             "FROM runs r WHERE r.status='completed' ORDER BY r.id DESC LIMIT ?",
             (limit,),
@@ -444,10 +493,13 @@ class Store:
         """删除超过保留期的运行（事件、来源结果、推送记录随外键级联删除）。返回删除的运行数。"""
         cutoff = tz.iso((tz.to_local(now) if now else tz.now()) - timedelta(days=retention_days))
         with self._conn() as conn:
+            conn.execute('DELETE FROM access_log WHERE last_at < ?', (cutoff,))
             return conn.execute("DELETE FROM runs WHERE started_at < ? AND status != 'running'", (cutoff,)).rowcount
 
-    def load_events(self, run_id: int) -> list[Event]:
-        rows = self._rows('SELECT payload_json FROM events WHERE run_id=? ORDER BY rank', (run_id,))
+    def load_events(self, run_id: int, brief_only: bool = True) -> list[Event]:
+        """brief_only=True：只取进入该期简报的事件；False：该次运行入库的全部事件。"""
+        sql = 'SELECT payload_json FROM events WHERE run_id=?' + (' AND in_brief=1' if brief_only else '') + ' ORDER BY rank'
+        rows = self._rows(sql, (run_id,))
         return [Event.model_validate_json(r['payload_json']) for r in rows]
 
     def recent_events(self, days: float = 7, exclude_run: int | None = None) -> list[tuple[int, Event]]:
@@ -546,6 +598,74 @@ class Store:
         return self._rows(
             'SELECT d.*, c.name FROM deliveries d LEFT JOIN channels c ON c.id=d.channel_id WHERE run_id=?', (run_id,)
         )
+
+    # ---------- users ----------
+    def list_users(self) -> list[dict]:
+        return self._rows('SELECT id, username, role, enabled, created_at, last_login_at, last_ip, last_seen_at FROM users ORDER BY id')
+
+    def get_user(self, user_id: int) -> dict | None:
+        rows = self._rows('SELECT * FROM users WHERE id=?', (user_id,))
+        return rows[0] if rows else None
+
+    def get_user_by_name(self, username: str) -> dict | None:
+        rows = self._rows('SELECT * FROM users WHERE username=?', (username,))
+        return rows[0] if rows else None
+
+    def create_user(self, username: str, password_hash: str, role: str) -> int:
+        with self._conn() as conn:
+            return int(conn.execute(
+                'INSERT INTO users(username, password_hash, role, created_at) VALUES (?,?,?,?)', (username, password_hash, role, _now())
+            ).lastrowid)
+
+    def update_user(self, user_id: int, **fields) -> None:
+        """可改 password_hash / role / enabled；改密码、角色、停用都会让该用户已登录的会话失效。"""
+        allowed = {k: v for k, v in fields.items() if k in ('password_hash', 'role', 'enabled')}
+        if not allowed:
+            return
+        sets = ', '.join(f'{k}=?' for k in allowed) + ', session_version=session_version+1'
+        with self._conn() as conn:
+            conn.execute(f'UPDATE users SET {sets} WHERE id=?', (*allowed.values(), user_id))
+
+    def touch_login(self, user_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute('UPDATE users SET last_login_at=? WHERE id=?', (_now(), user_id))
+
+    VISIT_MERGE_MINUTES = 30
+
+    def log_access(self, user_id: int | None, username: str, event: str, ip: str, user_agent: str = '', path: str = '') -> None:
+        """记录登录/登出/登录失败/页面访问。同一用户同一 IP 在 30 分钟内的连续访问合并为一行（累计次数、最后页面）。"""
+        now = _now()
+        agent = user_agent[:200]
+        with self._conn() as conn:
+            if event == 'visit':
+                since = tz.iso(tz.now() - timedelta(minutes=self.VISIT_MERGE_MINUTES))
+                row = conn.execute(
+                    "SELECT id FROM access_log WHERE user_id=? AND ip=? AND event='visit' AND last_at >= ? ORDER BY id DESC LIMIT 1",
+                    (user_id, ip, since),
+                ).fetchone()
+                if row:
+                    conn.execute('UPDATE access_log SET hits=hits+1, last_at=?, path=?, user_agent=? WHERE id=?', (now, path[:200], agent, row[0]))
+                else:
+                    conn.execute(
+                        'INSERT INTO access_log(user_id, username, event, ip, user_agent, path, first_at, last_at) VALUES (?,?,?,?,?,?,?,?)',
+                        (user_id, username, event, ip, agent, path[:200], now, now),
+                    )
+                conn.execute('UPDATE users SET last_seen_at=?, last_ip=? WHERE id=?', (now, ip, user_id))
+                return
+            conn.execute(
+                'INSERT INTO access_log(user_id, username, event, ip, user_agent, path, first_at, last_at) VALUES (?,?,?,?,?,?,?,?)',
+                (user_id, username[:64], event, ip, agent, path[:200], now, now),
+            )
+            if event == 'login' and user_id:
+                conn.execute('UPDATE users SET last_ip=?, last_seen_at=? WHERE id=?', (ip, now, user_id))
+
+    def list_access(self, limit: int = 200, user_id: int | None = None) -> list[dict]:
+        sql = 'SELECT * FROM access_log' + (' WHERE user_id=?' if user_id else '') + ' ORDER BY last_at DESC, id DESC LIMIT ?'
+        return self._rows(sql, ((user_id, limit) if user_id else (limit,)))
+
+    def delete_user(self, user_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute('DELETE FROM users WHERE id=?', (user_id,))
 
     # ---------- settings kv ----------
     def get_setting(self, key: str, default: str = '') -> str:

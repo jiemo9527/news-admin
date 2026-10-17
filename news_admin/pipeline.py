@@ -22,6 +22,7 @@ from .images import choose_image
 from .llm import LLMCall
 from .models import Article, ArticleAnalysis, Event, EventRef, EventSummary, Relation
 from .rank import rate_event
+from .summarize import fallback_summary
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -51,7 +52,8 @@ class PipelineDeps:
     cluster_config: ClusterConfig | None = None
     filter_config: FilterConfig = field(default_factory=FilterConfig)
     continuity_config: ContinuityConfig = field(default_factory=ContinuityConfig)
-    max_events: int = 30
+    # 每期简报收录数；可以是数字或返回数字的函数（后台改了立即生效）
+    max_events: int | Callable[[], int] = 50
 
 
 class PipelineBusy(RuntimeError):
@@ -158,14 +160,22 @@ class Pipeline:
                 event.rating = rate_event(event, now)
                 event.score = event.rating.total
             events.sort(key=lambda e: e.score, reverse=True)
-            events = events[: self.deps.max_events]
+            limit = self.deps.max_events() if callable(self.deps.max_events) else self.deps.max_events
+            brief, rest = events[:limit], events[limit:]
 
+            # 简报内的事件：模型写摘要并做事实校验；简报外的事件也全部入库（首页汇总可见），
+            # 摘要直接用分析阶段已有的中文关键事实，不再额外调用模型
             degraded = 0
-            for event in events:
+            for event in brief:
                 title = event.lead_analysis.title_zh if event.lead_analysis else event.lead.title
                 event.summary, event.summary_degraded = self.deps.summarize(event.articles, title, event.lead_analysis)
                 degraded += int(event.summary_degraded)
-            stats['events_published'] = len(events)
+            for event in rest:
+                event.in_brief = False
+                title = event.lead_analysis.title_zh if event.lead_analysis else event.lead.title
+                event.summary = fallback_summary(event.articles, title, event.lead_analysis)
+            stats['events_stored'] = len(events)
+            stats['events_published'] = len(brief)
             stats['summaries_degraded'] = degraded
 
             stats['events_with_thumbnail'] = self._attach_thumbnails(events)

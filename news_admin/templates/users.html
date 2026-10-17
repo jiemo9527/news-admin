@@ -1,0 +1,102 @@
+{% extends 'admin_base.html' %}
+{% block admin_title %}用户管理{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>用户管理</h1><p class="muted">管理员：全部功能。只读用户：可以浏览新闻和后台各页面，不能运行、修改或删除任何内容。未登录的访客看不到任何信息。</p></div>
+</div>
+
+{% if credentials %}
+<section class="panel cred-panel" role="alert">
+  <h2>{{ credentials.action }}：{{ credentials.username }}</h2>
+  <pre class="cred" id="cred-text">账号：{{ credentials.username }}
+密码：{{ credentials.password }}
+地址：{{ request.base_url }}</pre>
+  <div class="form-actions">
+    <button type="button" class="btn btn-primary" data-copy="#cred-text">复制账号密码</button>
+    <span class="muted small">密码只显示这一次，关闭或刷新页面后无法再查看；忘记了可以重置。密码不含 0/O、1/l/I、5/S 等易混淆字符。</span>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <ul class="source-list user-list">
+    {% for u in users %}
+    {% set me = u.id == user.id %}
+    <li class="source-row{% if not u.enabled %} is-off{% endif %}">
+      <div class="source-info">
+        <div class="source-name">
+          <b>{{ u.username }}</b>
+          <span class="pill {{ 'pill-accent' if u.role == 'admin' else '' }}">{{ roles[u.role] }}</span>
+          {% if me %}<span class="muted small">（当前登录）</span>{% endif %}
+          {% if not u.enabled %}<span class="status status-stale">已停用</span>{% endif %}
+        </div>
+        <div class="source-meta">
+          <span>创建 {{ local_time(u.created_at) }}</span>
+          <span>最近登录 {{ local_time(u.last_login_at) if u.last_login_at else '从未' }}</span>
+          {% if u.last_seen_at %}<span>最近访问 {{ local_time(u.last_seen_at) }}</span>{% endif %}
+          {% if u.last_ip %}<span>IP {{ u.last_ip }}</span>{% endif %}
+          <a href="/admin/users?log_user={{ u.id }}#access">访问记录</a>
+        </div>
+      </div>
+      {% if not me %}
+      <div class="source-actions user-actions">
+        <form method="post" action="/admin/users/{{ u.id }}/role" class="inline-form">
+          <select name="role" aria-label="角色" onchange="this.form.submit()">
+            {% for key, label in roles.items() %}<option value="{{ key }}" {% if key == u.role %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </form>
+        <form method="post" action="/admin/users/{{ u.id }}/password" onsubmit="return confirm('为「{{ u.username }}」生成新密码？其已登录的会话会失效。')"><button class="btn btn-ghost">重置密码</button></form>
+        <form method="post" action="/admin/users/{{ u.id }}/toggle"><button class="btn btn-ghost">{{ '停用' if u.enabled else '启用' }}</button></form>
+        <form method="post" action="/admin/users/{{ u.id }}/delete" onsubmit="return confirm('删除用户「{{ u.username }}」？')"><button class="btn btn-ghost link-danger">删除</button></form>
+      </div>
+      {% else %}
+      <a class="btn btn-ghost" href="/admin/settings#password">修改我的密码</a>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>新增用户</h2>
+  <form method="post" action="/admin/users" class="form-grid">
+    <label class="field"><span>用户名（留空自动生成）</span><input name="username" maxlength="32" autocomplete="off" pattern="[A-Za-z0-9_.\-\u4e00-\u9fff]{2,32}" placeholder="例如 zhangsan"></label>
+    <label class="field"><span>角色</span><select name="role">{% for key, label in roles.items() %}<option value="{{ key }}" {% if key == 'viewer' %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <div class="span-2 form-actions"><button class="btn btn-primary">创建并生成密码</button></div>
+  </form>
+  <p class="hint">系统自动生成 20 位强密码（如 <code>Kf7mR-x3hWq-9dTne-Pj4cY</code>），创建后显示一次，可一键复制发给对方。修改角色、重置密码或停用后，该用户已登录的会话立即失效。</p>
+</section>
+
+<section class="panel" id="access">
+  <h2>登录与访问记录 {% if log_user %}<small class="muted">· 仅显示 {{ (users | selectattr('id', 'equalto', log_user) | first or {}).get('username', '') }} · <a href="/admin/users#access">查看全部</a></small>{% endif %}</h2>
+  <p class="hint">同一用户同一 IP 30 分钟内的连续访问合并为一行。记录保留天数与「历史保留天数」一致。</p>
+  <div class="table-wrap">
+  <table class="table table-cards">
+    <thead><tr><th>时间</th><th>用户</th><th>事件</th><th>IP 地址</th><th class="num">次数</th><th>最后页面</th><th>设备</th></tr></thead>
+    <tbody>
+    {% for a in access %}
+    <tr>
+      <td class="nowrap">{{ local_time(a.last_at, '%m-%d %H:%M:%S') }}{% if a.hits > 1 %}<span class="muted small"> 起 {{ local_time(a.first_at, '%H:%M') }}</span>{% endif %}</td>
+      <td data-label="用户" class="nowrap">{{ a.username }}</td>
+      <td data-label="事件"><span class="status {{ {'login': 'status-completed', 'login_failed': 'status-failed', 'logout': 'status-stale', 'visit': 'status-running'}[a.event] }}">{{ {'login': '登录', 'login_failed': '登录失败', 'logout': '退出', 'visit': '访问'}[a.event] }}</span></td>
+      <td data-label="IP" class="nowrap"><code>{{ a.ip or '—' }}</code></td>
+      <td data-label="次数" class="num">{{ a.hits }}</td>
+      <td data-label="页面" class="url" title="{{ a.path }}">{{ a.path }}</td>
+      <td data-label="设备" class="url small muted" title="{{ a.user_agent }}">{{ a.user_agent | ua }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty-cell">暂无记录</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+<script>
+document.querySelectorAll('[data-copy]').forEach((btn) => btn.addEventListener('click', async () => {
+  const text = document.querySelector(btn.dataset.copy).innerText.trim();
+  try { await navigator.clipboard.writeText(text); }
+  catch { const t = document.createElement('textarea'); t.value = text; document.body.append(t); t.select(); document.execCommand('copy'); t.remove(); }
+  btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制账号密码'; }, 2000);
+}));
+</script>
+{% endblock %}

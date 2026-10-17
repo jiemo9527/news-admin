@@ -7,21 +7,20 @@
 <meta name="theme-color" content="#0f1419" media="(prefers-color-scheme: dark)">
 <title>{% block title %}新闻汇总{% endblock %} · News Admin</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body class="{% block body_class %}{% endblock %}">
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">N</span><span>新闻汇总</span></a>
+    {% if signed_in %}
     <nav class="mainnav" aria-label="主导航">
       <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>新闻</a>
       <a href="/briefs" {% if path.startswith('/briefs') %}aria-current="page"{% endif %}>往期简报</a>
-      {% if admin %}
-      <a href="/admin" {% if path.startswith('/admin') %}aria-current="page"{% endif %}>管理</a>
-      {% else %}
-      <a href="/login" {% if path == '/login' %}aria-current="page"{% endif %}>登录</a>
-      {% endif %}
+      <a href="/admin" {% if path.startswith('/admin') %}aria-current="page"{% endif %}>{{ '管理' if admin else '后台' }}</a>
+      <span class="whoami" title="{{ '管理员' if admin else '只读用户' }}">{{ user.username }}{% if not admin %}<span class="pill">只读</span>{% endif %}</span>
     </nav>
+    {% endif %}
   </div>
 </header>
 {% set message = request.session.pop('flash', None) %}

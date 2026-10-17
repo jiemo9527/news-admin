@@ -10,7 +10,10 @@
   </div>
   <div class="head-actions">
     {% if run.status == 'completed' %}<a class="btn" href="/briefs/{{ run.id }}">查看简报</a>{% endif %}
-    <form method="post" action="/admin/runs/{{ run.id }}/deliver"><button class="btn btn-primary">重新推送</button></form>
+    {% if admin %}
+    {% if run.status in ('failed', 'stale') %}<form method="post" action="/admin/runs/{{ run.id }}/delete" onsubmit="return confirm('删除运行记录 #{{ run.id }}？')"><button class="btn btn-danger">删除记录</button></form>{% endif %}
+    {% if run.status == 'completed' %}<form method="post" action="/admin/runs/{{ run.id }}/deliver"><button class="btn btn-primary">重新推送</button></form>{% endif %}
+    {% endif %}
   </div>
 </div>
 {% if run.error %}<div class="alert alert-error"><pre>{{ run.error }}</pre></div>{% endif %}
@@ -18,7 +21,7 @@
 <section class="panel">
   <h2>流水线漏斗</h2>
   <div class="funnel">
-    {% for key, label in [('articles_fetched','抓取'),('articles_after_dedupe','去重后'),('articles_filtered','价值过滤'),('clusters','聚类事件'),('events_unchanged','与此前重复'),('events_updated','同事件更新'),('events_follow_up','后续进展'),('events_published','发布'),('events_with_thumbnail','有配图'),('summaries_degraded','摘要降级')] %}
+    {% for key, label in [('articles_fetched','抓取'),('articles_after_dedupe','去重后'),('articles_filtered','价值过滤'),('clusters','聚类事件'),('events_unchanged','与此前重复'),('events_updated','同事件更新'),('events_follow_up','后续进展'),('events_stored','入库事件'),('events_published','进入简报'),('events_with_thumbnail','有配图'),('summaries_degraded','摘要降级')] %}
     <div class="funnel-step"><span class="funnel-value">{{ st.get(key, '—') }}</span><span class="funnel-label">{{ label }}</span></div>
     {% endfor %}
   </div>
@@ -44,13 +47,14 @@
 </div>
 
 <section class="panel">
-  <h2>发布的事件</h2>
+  <h2>入库的事件 <small class="muted">共 {{ events | length }} 条，其中 {{ events | selectattr('in_brief') | list | length }} 条进入简报</small></h2>
   <div class="table-wrap"><table class="table">
-    <thead><tr><th>#</th><th>评级</th><th>标题</th><th>主题</th><th class="num">影响力</th><th>来源</th></tr></thead>
+    <thead><tr><th>#</th><th>评级</th><th>简报</th><th>标题</th><th>主题</th><th class="num">影响力</th><th>来源</th></tr></thead>
     {% for e in events %}
     <tr>
       <td>{{ loop.index }}</td>
       <td>{% if e.rating %}<span class="grade grade-{{ e.rating.grade }}">{{ e.rating.grade }}</span>{% endif %} <span class="muted">{{ '%.1f' | format(e.score) }}</span></td>
+      <td>{{ '✓' if e.in_brief else '' }}</td>
       <td>{% if e.is_update %}<span class="pill pill-accent">更新</span> {% elif e.previous %}<span class="pill pill-accent">后续</span> {% endif %}{{ e.summary.headline if e.summary else e.lead.title }}{% if e.summary_degraded %} <span class="pill pill-warn">降级</span>{% endif %}</td>
       <td class="nowrap">{% if e.lead_analysis %}{{ region_label(e) }} · {{ topic_labels[e.lead_analysis.topic] }}{% endif %}</td>
       <td class="num">{% if e.lead_analysis %}<span title="{{ e.lead_analysis.impact_reason }}">{{ e.lead_analysis.impact }}</span>{% endif %}</td>

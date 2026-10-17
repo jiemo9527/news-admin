@@ -38,23 +38,76 @@ class Runtime:
     embedder: EmbeddingClient | HashingEmbedder
     thumbnails: ThumbnailCache
     pipeline: Pipeline = field(init=False)
+    transport: object | None = None  # 测试注入
 
     def __post_init__(self) -> None:
         s = self.settings
         deps = PipelineDeps(
             fetch=self._fetch,
-            analyze=lambda articles: analyze_articles(self.llm, articles, s.min_topic_confidence, s.llm_concurrency),
-            embed=self.embedder,
+            analyze=lambda articles: analyze_articles(self.llm, articles, self.settings.min_topic_confidence, self.settings.llm_concurrency),
+            embed=lambda texts: self.embedder(texts),
             judge_factory=lambda analyses: make_judge(self.llm, analyses),
             summarize=lambda articles, title, analysis: summarize_event(self.llm, articles, title, analysis),
             llm_calls=lambda: self.llm.calls,
-            continuity_judge=make_continuity_judge(self.llm),
+            continuity_judge=lambda new, old: make_continuity_judge(self.llm)(new, old),
             thumbnail=self.thumbnails.fetch,
             filter_config=FilterConfig(min_impact=s.min_impact, drop_opinion=s.drop_opinion),
             cluster_config=self.cluster_config(),
-            max_events=s.max_events,
+            max_events=self.max_events,
         )
         self.pipeline = Pipeline(self.store, deps)
+
+    def max_events(self) -> int:
+        return self.settings.max_events
+
+    def apply_settings(self, settings: Settings) -> None:
+        """后台修改模型/向量/阈值后热更新，不需要重启。运行中的任务继续用旧客户端跑完。"""
+        self.settings = settings
+        calls = self.llm.calls
+        self.llm = make_llm(settings)
+        self.llm.calls = calls  # 保留调用记录，统计不中断
+        self.embedder = make_embedder(settings)
+        self.pipeline.deps.filter_config = FilterConfig(min_impact=settings.min_impact, drop_opinion=settings.drop_opinion)
+        self.pipeline.deps.cluster_config = self.cluster_config()
+
+    def test_llm(self) -> tuple[bool, str]:
+        import time
+
+        import httpx
+
+        s = self.settings
+        started = time.monotonic()
+        try:
+            with httpx.Client(base_url=s.llm_base_url.rstrip('/'), headers={'Authorization': f'Bearer {s.llm_api_key}'}, timeout=30,
+                              transport=self.transport) as client:
+                response = client.post('/chat/completions', json={'model': s.llm_model, 'max_tokens': 5,
+                                                                  'messages': [{'role': 'user', 'content': '回复 ok'}]})
+            if response.status_code >= 400:
+                return False, f'HTTP {response.status_code}：{response.text[:160]}'
+            response.json()['choices'][0]
+        except Exception as exc:
+            return False, f'{type(exc).__name__}: {str(exc)[:160]}'
+        return True, f'{s.llm_model} 响应正常，用时 {time.monotonic() - started:.1f} 秒'
+
+    def test_embedding(self) -> tuple[bool, str]:
+        import time
+
+        import httpx
+
+        s = self.settings
+        if not s.embedding_api_key:
+            return False, '未填写向量服务 API Key，当前使用字符哈希降级'
+        started = time.monotonic()
+        try:
+            with httpx.Client(base_url=s.embedding_base_url.rstrip('/'), headers={'Authorization': f'Bearer {s.embedding_api_key}'},
+                              timeout=30, transport=self.transport) as client:
+                response = client.post('/embeddings', json={'model': s.embedding_model, 'input': ['连接测试']})
+            if response.status_code >= 400:
+                return False, f'HTTP {response.status_code}：{response.text[:160]}'
+            dims = len(response.json()['data'][0]['embedding'])
+        except Exception as exc:
+            return False, f'{type(exc).__name__}: {str(exc)[:160]}'
+        return True, f'{s.embedding_model} 返回 {dims} 维向量，用时 {time.monotonic() - started:.1f} 秒'
 
     def _fetch(self, source):
         window = self.store.get_setting('fetch_window', self.settings.fetch_window)
@@ -114,19 +167,27 @@ class Runtime:
         return results
 
 
+def make_llm(settings: Settings) -> LLMClient:
+    return LLMClient(
+        LLMSettings(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model),
+        cache_dir=settings.cache_dir / 'llm',
+    )
+
+
+def make_embedder(settings: Settings) -> EmbeddingClient | HashingEmbedder:
+    if settings.embedding_api_key:
+        return EmbeddingClient(
+            settings.embedding_base_url, settings.embedding_api_key, settings.embedding_model, cache_dir=settings.cache_dir / 'embeddings'
+        )
+    log.warning('未配置 NEWS_EMBEDDING_API_KEY，使用字符哈希向量降级，跨语言聚类效果会变差')
+    return HashingEmbedder()
+
+
 def build_runtime(settings: Settings | None = None) -> Runtime:
     settings = settings or get_settings()
     store = Store(settings.db_path)
     store.seed_sources(DEFAULT_SOURCES)
-    llm = LLMClient(
-        LLMSettings(base_url=settings.llm_base_url, api_key=settings.llm_api_key, model=settings.llm_model),
-        cache_dir=settings.cache_dir / 'llm',
+    return Runtime(
+        settings=settings, store=store, llm=make_llm(settings), embedder=make_embedder(settings),
+        thumbnails=ThumbnailCache(settings.data_dir / 'thumbs'),
     )
-    if settings.embedding_api_key:
-        embedder: EmbeddingClient | HashingEmbedder = EmbeddingClient(
-            settings.embedding_base_url, settings.embedding_api_key, settings.embedding_model, cache_dir=settings.cache_dir / 'embeddings'
-        )
-    else:
-        log.warning('未配置 NEWS_EMBEDDING_API_KEY，使用字符哈希向量降级，跨语言聚类效果会变差')
-        embedder = HashingEmbedder()
-    return Runtime(settings=settings, store=store, llm=llm, embedder=embedder, thumbnails=ThumbnailCache(settings.data_dir / 'thumbs'))
