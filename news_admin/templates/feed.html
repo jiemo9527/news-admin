@@ -53,8 +53,15 @@
 </p>
 
 {% if feed.items %}
-<div class="news-list">
-  {% for item in feed.items %}{{ feed_card(item, q) }}{% endfor %}
+{% set timeline = sort == 'time' and range_ in ('today', '3d', '7d') %}
+<div class="news-list{% if timeline %} news-timeline{% endif %}">
+  {% for item in feed.items %}
+    {% if timeline %}
+      {% set label = local_time(item.event_time, '%H:00' if range_ == 'today' else '%Y-%m-%d') %}
+      {% if loop.changed(label) %}<h2 class="timeline-label">{{ label }}</h2>{% endif %}
+    {% endif %}
+    {{ feed_card(item, q) }}
+  {% endfor %}
 </div>
 {% else %}
 <div class="empty">

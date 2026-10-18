@@ -133,6 +133,11 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
 .result-line { margin: 18px 2px 10px; font-size: 13px; color: var(--ink-2); }
 
 .news-list { display: grid; gap: 10px; }
+.news-timeline { position: relative; padding-left: 20px; }
+.news-timeline::before { content: ""; position: absolute; left: 4px; top: 12px; bottom: 0; width: 2px; background: var(--line-strong); }
+.timeline-label { position: relative; margin: 8px 0 0; font-size: 14px; line-height: 24px; color: var(--accent-ink); font-variant-numeric: tabular-nums; }
+.timeline-label:first-child { margin-top: 0; }
+.timeline-label::before { content: ""; position: absolute; left: -19px; top: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 .news-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 .news-card:target { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .news-main { min-width: 0; display: grid; gap: 6px; align-content: start; }

@@ -159,8 +159,9 @@ def test_home_feed_filters_and_pagination_links(tmp_path):
     assert '<mark>美联储</mark>降息25个基点' in html
     assert client.get('/', params={'q': '<script>'}).text.count('<script>') == 0
     assert 'name="q"' in html and 'value="美联储"' in html
-    for label in ('今天', '昨天', '3天内', '一周内'):
+    for label in ('今天', '3天内', '7天内'):
         assert label in html
+    assert 'range=yesterday' not in html
     assert 'aria-current="page"' in html
     miss = client.get('/', params={'q': '不存在的关键词'}).text
     assert '没有符合条件的新闻' in miss

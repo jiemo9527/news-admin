@@ -15,7 +15,7 @@ from .fetch import Source
 from .llm import LLMCall
 from .models import Event
 
-FEED_RANGES = {'all': '全部', 'today': '今天', 'yesterday': '昨天', '3d': '3天内', '7d': '一周内'}
+FEED_RANGES = {'all': '全部', 'today': '今天', '3d': '3天内', '7d': '7天内'}
 FEED_SORTS = {'time': '最新', 'score': '评级'}
 
 
@@ -23,6 +23,7 @@ FEED_SORTS = {'time': '最新', 'score': '评级'}
 class FeedItem:
     run_id: int
     event: Event
+    event_time: str = ''
 
 
 @dataclass
@@ -474,9 +475,9 @@ class Store:
         with self._conn() as conn:
             total = conn.execute(f'SELECT COUNT(*) {base}', params).fetchone()[0]
             rows = conn.execute(
-                f'SELECT e.run_id, e.payload_json {base} ORDER BY {order} LIMIT ? OFFSET ?', (*params, per_page, (page - 1) * per_page)
+                f'SELECT e.run_id, e.payload_json, e.event_time {base} ORDER BY {order} LIMIT ? OFFSET ?', (*params, per_page, (page - 1) * per_page)
             ).fetchall()
-        items = [FeedItem(run_id=int(r[0]), event=Event.model_validate_json(r[1])) for r in rows]
+        items = [FeedItem(run_id=int(r[0]), event=Event.model_validate_json(r[1]), event_time=r[2]) for r in rows]
         return FeedPage(items=items, total=int(total), page=page, per_page=per_page)
 
     def topic_counts(self, range_: str = 'all', q: str = '', now: datetime | None = None, source: str = '') -> dict[str, int]:
