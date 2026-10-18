@@ -225,6 +225,20 @@ def test_footer_has_github_link_and_feed_header_sentence_is_gone(tmp_path):
     assert '同一事件只显示最新版本' not in html and '保留近' not in html
 
 
+def test_signed_in_pages_have_accessible_back_to_top_button(tmp_path):
+    from bs4 import BeautifulSoup
+    rt, client = make_client(tmp_path)
+    run_id = seed_run(rt)
+    for path in ('/', f'/briefs/{run_id}', '/admin'):
+        soup = BeautifulSoup(client.get(path).text, 'html.parser')
+        button = soup.select_one('button[data-back-to-top]')
+        assert button is not None
+        assert button['type'] == 'button'
+        assert button['aria-label'] == '返回顶部'
+        assert button.has_attr('hidden')
+    assert 'data-back-to-top' not in client.get('/login').text
+
+
 def test_admin_can_delete_a_brief_but_anonymous_cannot(tmp_path):
     rt, client = make_client(tmp_path, login=False)
     run_id = seed_run(rt)
@@ -511,6 +525,23 @@ def test_generated_credentials_are_strong_unambiguous_and_shown_once(tmp_path):
     again = TestClient(client.app)
     again.post('/login', data={'username': username, 'password': new_password})
     assert again.get('/', follow_redirects=False).status_code == 200
+
+
+def test_login_is_long_lived_and_multi_device(tmp_path):
+    import re as _re
+    rt, desktop = make_client(tmp_path)
+    phone = TestClient(desktop.app)
+    response = phone.post('/login', data={'username': 'admin', 'password': 'pw'}, follow_redirects=False)
+    cookie = response.headers['set-cookie']
+    max_age = int(_re.search(r'Max-Age=(\d+)', cookie, _re.I).group(1))
+    assert max_age >= 365 * 86400 and 'httponly' in cookie.lower()
+    # 第二台设备登录不会挤掉第一台
+    assert desktop.get('/', follow_redirects=False).status_code == 200
+    assert phone.get('/', follow_redirects=False).status_code == 200
+    # 登出只结束当前设备
+    phone.post('/logout')
+    assert phone.get('/', follow_redirects=False).status_code == 303
+    assert desktop.get('/', follow_redirects=False).status_code == 200
 
 
 def test_login_and_visits_are_logged_with_time_and_ip(tmp_path):

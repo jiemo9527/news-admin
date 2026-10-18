@@ -16,7 +16,7 @@ from dotenv import dotenv_values
 from . import tz
 from .config import Settings, update_env_file
 from .models import Event
-from .store import Store, PUSH_BRIEFS_SCHEMA, PUSHED_EVENTS_SCHEMA
+from .store import Store, PUSH_BRIEFS_SCHEMA, PUSHED_EVENTS_SCHEMA, USER_STATE_SCHEMA
 
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
@@ -140,8 +140,9 @@ def restore_backup(rt, payload: bytes) -> dict:
                         if src.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                             raise ValueError('数据库完整性检查失败')
                         expected = {r[0]: r[1] for r in live.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-                        # v2 旧备份缺少新增的推送汇总表；只添加这一已知结构，再做严格比对。
+                        # v2 旧备份缺少新增的推送汇总表、个人阅读状态表；只添加这些已知结构，再做严格比对。
                         src.executescript(PUSH_BRIEFS_SCHEMA)
+                        src.executescript(USER_STATE_SCHEMA)
                         backfill = not src.execute("SELECT 1 FROM sqlite_master WHERE name='pushed_events'").fetchone()
                         src.executescript(PUSHED_EVENTS_SCHEMA)
                         actual = {r[0]: r[1] for r in src.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
@@ -213,7 +214,8 @@ def clear_data(rt) -> dict:
         with rt.store._conn() as conn:
             removed = conn.execute('SELECT COUNT(*) FROM runs').fetchone()[0]
             conn.execute('DELETE FROM runs')
-            for table in ('events', 'event_urls', 'source_results', 'llm_calls', 'deliveries', 'access_log', 'pushed_events'):
+            for table in ('events', 'event_urls', 'source_results', 'llm_calls', 'deliveries', 'access_log', 'pushed_events',
+                          'read_events', 'favorites', 'search_history'):
                 conn.execute(f'DELETE FROM {table}')
             conn.execute("DELETE FROM users WHERE role != 'admin'")
             conn.execute('UPDATE users SET last_login_at=NULL, last_seen_at=NULL, last_ip=\'\', session_version=session_version+1')

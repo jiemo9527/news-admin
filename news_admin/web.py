@@ -11,6 +11,7 @@ import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -43,6 +44,8 @@ BASE = Path(__file__).resolve().parent
 PUBLIC_PATHS = ('/login', '/healthz', '/favicon.ico')
 PUBLIC_PREFIXES = ('/static/',)
 PER_PAGE = 20
+STALE_AFTER = timedelta(hours=24)
+SESSION_MAX_AGE = 10 * 365 * 86400
 SECRET_CHANNEL_FIELDS = ('bot_token', 'webhook', 'secret', 'password')
 REPO_URL = 'https://github.com/jiemo9527/news-admin'
 
@@ -227,21 +230,40 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         request.state.user = user
         if request.method == 'GET' and not path.startswith('/thumb/'):
             audit(request, user, 'visit')
-        # 只读用户：所有写操作（POST）一律拒绝，修改自己的密码除外
-        if request.method != 'GET' and user['role'] != 'admin' and path not in ('/logout', '/admin/password'):
+        # 只读用户：所有写操作（POST）一律拒绝，修改自己的密码和个人阅读状态（/me/）除外
+        if request.method != 'GET' and user['role'] != 'admin' and path not in ('/logout', '/admin/password') and not path.startswith('/me/'):
             return Response('只读用户无权执行此操作', status_code=403, media_type='text/plain; charset=utf-8')
         if (path.startswith('/admin/users') or path.startswith('/admin/data')) and user['role'] != 'admin':
             return Response('仅管理员可访问', status_code=403, media_type='text/plain; charset=utf-8')
         return await call_next(request)
 
-    app.add_middleware(SessionMiddleware, secret_key=secret, same_site='lax', max_age=12 * 3600, https_only=False)
+    # 登录长期有效、可多设备同时登录；改密码、改角色、停用账号或恢复备份时所有设备统一失效（session_version）
+    app.add_middleware(SessionMiddleware, secret_key=secret, same_site='lax', max_age=SESSION_MAX_AGE, https_only=False)
 
     def page(request: Request, name: str, **context: Any) -> HTMLResponse:
         user = getattr(request.state, 'user', None)
         return templates.TemplateResponse(request, name, {
             'rt': rt, 'user': user, 'admin': bool(user and user['role'] == 'admin'), 'signed_in': user is not None,
-            'path': request.url.path, **context,
+            'path': request.url.path, 'stale_warning': stale_warning() if user and name == 'feed.html' else '', **context,
         })
+
+    def stale_warning() -> str:
+        """最近 24 小时没有任何新内容入库时提示（只在首页显示，5 秒后消失）。"""
+        last = tz.parse(rt.store.last_content_at())
+        if last is None or tz.now() - last < STALE_AFTER:
+            return ''
+        hours = int((tz.now() - last).total_seconds() // 3600)
+        return f'已超过 24 小时没有新内容（上次 {last.strftime("%m-%d %H:%M")}，{hours} 小时前），请检查抓取计划和来源'
+
+    def is_fetch(request: Request) -> bool:
+        return request.headers.get('x-requested-with') == 'fetch'
+
+    def back(request: Request, fallback: str = '/') -> RedirectResponse:
+        """无 JS 时回到原页面；只接受本站路径。"""
+        from urllib.parse import urlsplit
+        parts = urlsplit(request.headers.get('referer', ''))
+        same = parts.netloc == request.url.netloc and parts.path.startswith('/') and not parts.path.startswith('//')
+        return RedirectResponse((parts.path + (f'?{parts.query}' if parts.query else '')) if same else fallback, status_code=303)
 
     def flash(request: Request, message: str, kind: str = 'info') -> None:
         request.session['flash'] = {'text': message, 'kind': kind}
@@ -256,33 +278,117 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         return {'ok': True}
 
     @app.get('/', response_class=HTMLResponse)
-    def index(request: Request, q: str = '', range: str = 'all', sort: str = 'time', topic: str = '', source: str = ''):
+    def index(request: Request, q: str = '', range: str = 'all', sort: str = 'time', topic: str = '', source: str = '', unread: str = ''):
         q = ' '.join(q.split())[:60]
         source = source.strip()[:60]
         range_ = range if range in FEED_RANGES else 'all'
         sort = sort if sort in FEED_SORTS else 'time'
         topic = topic if topic in {t.value for t in Topic} else ''
+        only_unread = unread == '1'
+        uid = request.state.user['id']
         raw = request.query_params.get('page', '1')
         current = int(raw) if raw.isdigit() and int(raw) > 0 else 1
-        feed = rt.store.feed(range_=range_, q=q, page=current, per_page=PER_PAGE, sort=sort, topic=topic, source=source)
-        if feed.total and feed.page > feed.pages:
-            feed = rt.store.feed(range_=range_, q=q, page=feed.pages, per_page=PER_PAGE, sort=sort, topic=topic, source=source)
+        # 先固定快照（最新运行 + 当前时间），渲染与长按「至此已读」都基于它
+        latest = rt.store.latest_completed_run()
+        max_run = latest['id'] if latest else 0
         now = tz.now()
+
+        def load(page_no: int):
+            return rt.store.feed(range_=range_, q=q, page=page_no, per_page=PER_PAGE, sort=sort, topic=topic, source=source,
+                                 user_id=uid, unread=only_unread, max_run=max_run, now=now)
+
+        feed = load(current)
+        if feed.total and feed.page > feed.pages:
+            feed = load(feed.pages)
         for item in feed.items:
             ensure_rating(item.event, now)
-        defaults = {'q': '', 'range': 'all', 'sort': 'time', 'topic': '', 'source': '', 'page': 1}
+        defaults = {'q': '', 'range': 'all', 'sort': 'time', 'topic': '', 'source': '', 'unread': '', 'page': 1}
 
         def url(**override: Any) -> str:
-            merged = {'q': q, 'range': range_, 'sort': sort, 'topic': topic, 'source': source, 'page': 1, **override}
+            merged = {'q': q, 'range': range_, 'sort': sort, 'topic': topic, 'source': source, 'unread': '1' if only_unread else '',
+                      'page': 1, **override}
             query = {k: v for k, v in merged.items() if v != defaults[k]}
             return '/' + ('?' + urlencode(query) if query else '')
 
         return page(
-            request, 'feed.html', feed=feed, q=q, range_=range_, sort=sort, topic=topic, source=source, url=url,
-            topic_counts=rt.store.topic_counts(range_=range_, q=q, source=source),
-            source_counts=rt.store.source_counts(range_=range_, q=q, topic=topic), latest=rt.store.latest_completed_run(),
+            request, 'feed.html', feed=feed, q=q, range_=range_, sort=sort, topic=topic, source=source, url=url, unread=only_unread,
+            topic_counts=rt.store.topic_counts(range_=range_, q=q, source=source, user_id=uid, unread=only_unread, now=now),
+            source_counts=rt.store.source_counts(range_=range_, q=q, topic=topic, user_id=uid, unread=only_unread, now=now), latest=latest,
+            history=rt.store.search_history(uid), max_run=max_run, snapshot_at=tz.iso(now),
             retention_days=int(rt.store.get_setting('retention_days', str(settings.retention_days))),
         )
+
+    @app.get('/favorites', response_class=HTMLResponse)
+    def favorites(request: Request):
+        items = rt.store.favorites(request.state.user['id'])
+        now = tz.now()
+        for item in items:
+            ensure_rating(item.event, now)
+        return page(request, 'favorites.html', items=items)
+
+    # ---------- 个人阅读状态：只读用户也可使用，只影响自己 ----------
+    def personal_result(request: Request, payload: dict) -> Any:
+        return payload if is_fetch(request) else back(request)
+
+    @app.post('/me/read')
+    def toggle_read(request: Request, canonical: str = Form(...), value: str = Form('1')):
+        if not rt.store.canonical_exists(canonical):
+            raise HTTPException(404)
+        rt.store.set_read(request.state.user['id'], [canonical], value == '1')
+        return personal_result(request, {'ok': True, 'value': value == '1'})
+
+    @app.post('/me/favorite')
+    def toggle_favorite(request: Request, canonical: str = Form(...), value: str = Form('1')):
+        if not rt.store.canonical_exists(canonical):
+            raise HTTPException(404)
+        rt.store.set_favorite(request.state.user['id'], canonical, value == '1')
+        return personal_result(request, {'ok': True, 'value': value == '1'})
+
+    @app.post('/me/read/upto')
+    def read_upto(request: Request, canonical: str = Form(...), max_run: int = Form(...), range: str = Form('all'), q: str = Form(''),
+                  sort: str = Form('time'), topic: str = Form(''), source: str = Form(''), unread: str = Form(''), at: str = Form('')):
+        # 用页面打开时的时间重建筛选边界（跨午夜、3 天自动已读边界不漂移）；不信任未来时间
+        snapshot = tz.parse(at)
+        if snapshot is None or snapshot > tz.now():
+            snapshot = tz.now()
+        count = rt.store.mark_read_upto(
+            request.state.user['id'], canonical, max_run, range_=range if range in FEED_RANGES else 'all', q=' '.join(q.split())[:60],
+            sort=sort if sort in FEED_SORTS else 'time', topic=topic if topic in {t.value for t in Topic} else '',
+            source=source.strip()[:60], unread=unread == '1', now=snapshot)
+        if count is None:
+            raise HTTPException(404)
+        return personal_result(request, {'ok': True, 'count': count})
+
+    @app.post('/me/read/brief/{run_id}')
+    def read_brief(request: Request, run_id: int):
+        run = rt.store.get_run(run_id)
+        if not run or run['status'] != 'completed':
+            raise HTTPException(404)
+        count = rt.store.mark_run_read(request.state.user['id'], run_id)
+        if is_fetch(request):
+            return {'ok': True, 'count': count}
+        flash(request, f'已将本期 {count} 条标为已读', 'success')
+        return back(request, f'/briefs/{run_id}')
+
+    @app.post('/me/read/push/{key}')
+    def read_push_brief(request: Request, key: str):
+        snapshot = rt.store.get_push_brief(key)
+        if snapshot is None:
+            raise HTTPException(404)
+        count = rt.store.mark_events_read(request.state.user['id'], snapshot['run_id'], [e.id for e in snapshot['events']])
+        if is_fetch(request):
+            return {'ok': True, 'count': count}
+        flash(request, f'已将本期 {count} 条标为已读', 'success')
+        return back(request, f'/briefs/push/{key}')
+
+    @app.post('/me/search-history')
+    def save_search(request: Request, q: str = Form('')):
+        return personal_result(request, {'items': rt.store.add_search_history(request.state.user['id'], q)})
+
+    @app.post('/me/search-history/clear')
+    def clear_search(request: Request):
+        rt.store.clear_search_history(request.state.user['id'])
+        return personal_result(request, {'items': []})
 
     @app.get('/favicon.ico', include_in_schema=False)
     def favicon():
@@ -298,7 +404,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         if snapshot is None:
             raise HTTPException(404)
         return page(request, 'brief.html', run={'id': snapshot['run_id'], 'finished_at': snapshot['created_at']},
-                    sections=build_sections(snapshot['events']), push_snapshot=True)
+                    sections=build_sections(snapshot['events']), push_snapshot=True, push_key=key)
 
     @app.get('/briefs/{run_id}', response_class=HTMLResponse)
     def brief(request: Request, run_id: int):

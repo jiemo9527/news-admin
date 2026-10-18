@@ -8,7 +8,12 @@
     <h1>{{ "推送汇总简报" if push_snapshot else "新闻简报 #" ~ run.id }}</h1>
     <p class="muted">生成于 {{ local_time(run.finished_at) }}</p>
   </div>
-  {% if admin and not push_snapshot %}<form method="post" action="/admin/briefs/{{ run.id }}/delete" onsubmit="return confirm('删除简报 #{{ run.id }}？其中的新闻也会从首页移除，不可恢复。')"><button class="btn btn-danger">删除本期</button></form>{% endif %}
+  <div class="feed-head-actions">
+    <form method="post" action="{{ '/me/read/push/' ~ push_key if push_snapshot else '/me/read/brief/' ~ run.id }}" data-mark-all>
+      <button class="btn">全部标为已读</button>
+    </form>
+    {% if admin and not push_snapshot %}<form method="post" action="/admin/briefs/{{ run.id }}/delete" onsubmit="return confirm('删除简报 #{{ run.id }}？其中的新闻也会从首页移除，不可恢复。')"><button class="btn btn-danger">删除本期</button></form>{% endif %}
+  </div>
 </section>
 <nav class="toc brief-nav" data-brief-nav aria-label="栏目"><div class="brief-nav-track">{% for section in sections %}<a class="chip" href="#s{{ loop.index }}">{{ section.title }}<span class="chip-count">{{ section.events | length }}</span></a>{% endfor %}</div></nav>
 {% for section in sections %}

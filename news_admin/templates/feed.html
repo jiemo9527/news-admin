@@ -21,13 +21,25 @@
     <input type="hidden" name="range" value="{{ range_ }}">
     <input type="hidden" name="sort" value="{{ sort }}">
     <input type="hidden" name="topic" value="{{ topic }}">
+    <input type="hidden" name="unread" value="{{ '1' if unread else '' }}">
     <noscript><button type="submit" class="btn btn-primary">搜索</button></noscript>
+  </div>
+  <div class="search-history" data-search-history {% if not history %}hidden{% endif %}>
+    <span class="search-history-label">最近搜索</span>
+    <span class="search-history-items" data-history-items>
+      {% for h in history %}<button type="button" class="chip" data-q="{{ h }}">{{ h }}</button>{% endfor %}
+    </span>
+    <button type="button" class="link search-history-clear" data-history-clear>清除</button>
   </div>
   <div class="filter-row">
     <nav class="segmented" aria-label="时间范围">
       {% for key, label in feed_ranges.items() %}
       <a href="{{ url(range=key) }}" data-live-link {% if key == range_ %}aria-current="page"{% endif %}>{{ label }}</a>
       {% endfor %}
+    </nav>
+    <nav class="segmented segmented-sm" aria-label="阅读状态">
+      <a href="{{ url(unread='') }}" data-live-link {% if not unread %}aria-current="page"{% endif %}>全部</a>
+      <a href="{{ url(unread='1') }}" data-live-link {% if unread %}aria-current="page"{% endif %}>只看未读</a>
     </nav>
     <nav class="segmented segmented-sm" aria-label="排序">
       {% for key, label in feed_sorts.items() %}
@@ -47,14 +59,16 @@
 
 <div data-live="results">
 <p class="result-line">
-  共 <b>{{ feed.total }}</b> 条{% if q %}，关键词「{{ q }}」{% endif %}{% if source %}，来源「{{ source }}」{% endif %}{% if range_ != 'all' %}，{{ feed_ranges[range_] }}{% endif %}{% if topic %}，{{ topic_labels[topic] if topic in topic_labels else topic }}{% endif %}
+  共 <b>{{ feed.total }}</b> 条{% if unread %}未读{% endif %}{% if q %}，关键词「{{ q }}」{% endif %}{% if source %}，来源「{{ source }}」{% endif %}{% if range_ != 'all' %}，{{ feed_ranges[range_] }}{% endif %}{% if topic %}，{{ topic_labels[topic] if topic in topic_labels else topic }}{% endif %}
   {% if feed.pages > 1 %}<span class="muted">· 第 {{ feed.page }} / {{ feed.pages }} 页</span>{% endif %}
-  {% if q or source or topic or range_ != 'all' %}<a class="reset-link" href="/">清除筛选</a>{% endif %}
+  {% if q or source or topic or unread or range_ != 'all' %}<a class="reset-link" href="/">清除筛选</a>{% endif %}
+  <span class="muted upto-hint">长按某条可将其及以上标为已读</span>
 </p>
 
 {% if feed.items %}
 {% set timeline = sort == 'time' and range_ in ('today', '3d', '7d') %}
-<div class="news-list{% if timeline %} news-timeline{% endif %}">
+<div class="news-list{% if timeline %} news-timeline{% endif %}" data-upto data-max-run="{{ max_run }}" data-at="{{ snapshot_at }}"
+     data-range="{{ range_ }}" data-q="{{ q }}" data-sort="{{ sort }}" data-topic="{{ topic }}" data-source="{{ source }}" data-unread="{{ '1' if unread else '' }}">
   {% for item in feed.items %}
     {% if timeline %}
       {% set label = local_time(item.event_time, '%H:00' if range_ == 'today' else '%Y-%m-%d') %}
@@ -67,7 +81,7 @@
 <div class="empty">
   {% if latest %}
   <h2>没有符合条件的新闻</h2>
-  <p>换个关键词或来源，或放宽时间范围试试。</p>
+  <p>{% if unread %}当前条件下都已读完。{% else %}换个关键词或来源，或放宽时间范围试试。{% endif %}</p>
   <a class="btn" href="/">查看全部</a>
   {% else %}
   <h2>还没有新闻</h2>
@@ -93,5 +107,5 @@
 </nav>
 {% endif %}
 </div>
-<script src="/static/app.js?v=3" defer></script>
+<script src="/static/app.js?v=4" defer></script>
 {% endblock %}

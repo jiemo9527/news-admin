@@ -32,9 +32,10 @@
 {% set s = event.summary %}
 {% set a = event.lead_analysis %}
 {% set r = event.rating %}
-<article class="news-card" id="e-{{ event.id }}">
+<article class="news-card {{ 'is-read' if item.is_read else 'is-unread' }}" id="e-{{ event.id }}" data-canonical="{{ item.canonical_id }}">
   <div class="news-main">
     <div class="news-kicker">
+      {% if not item.is_read %}<span class="unread-dot" title="未读" aria-label="未读"></span>{% endif %}
       {{ grade_badge(r) }}
       {% if a %}<span class="kicker-topic">{{ topic_labels[a.topic] }}</span><span class="dot" aria-hidden="true">·</span><span>{{ region_label(event) }}</span>{% endif %}
       {% if event.is_update %}<span class="pill pill-accent">更新</span>{% elif event.previous %}<span class="pill pill-accent">后续</span>{% endif %}
@@ -45,6 +46,18 @@
     <div class="news-meta">
       {{ event_times(event) }}
       <span class="sources" title="{{ event.sources | join('、') }}">{{ event.sources[:3] | join('、') }}{% if event.sources | length > 3 %} 等 {{ event.sources | length }} 家{% endif %}</span>
+    </div>
+    <div class="card-tools">
+      <form method="post" action="/me/read" data-card-action="read">
+        <input type="hidden" name="canonical" value="{{ item.canonical_id }}">
+        <input type="hidden" name="value" value="{{ '0' if item.read else '1' }}">
+        <button class="tool" type="submit" aria-pressed="{{ 'true' if item.is_read else 'false' }}" {% if item.auto_read and not item.read %}disabled data-auto-read title="超过 3 天自动视为已读"{% endif %}>{{ '标为未读' if item.read else ('已读' if item.auto_read else '标为已读') }}</button>
+      </form>
+      <form method="post" action="/me/favorite" data-card-action="favorite">
+        <input type="hidden" name="canonical" value="{{ item.canonical_id }}">
+        <input type="hidden" name="value" value="{{ '0' if item.favorite else '1' }}">
+        <button class="tool tool-fav" type="submit" aria-pressed="{{ 'true' if item.favorite else 'false' }}">{{ '已收藏' if item.favorite else '收藏' }}</button>
+      </form>
     </div>
     {% set context = event.previous | selectattr('relation', 'equalto', 'follow_up') | list %}
     {% if context %}

@@ -73,10 +73,17 @@ body:not(.admin) .topbar-inner { max-width: var(--container); }
 .container { width: 100%; max-width: var(--container); margin: 0 auto; padding: 28px 20px 48px; flex: 1; }
 .footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
 
+.back-to-top { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 25; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--surface); color: var(--accent-ink); box-shadow: var(--shadow-lg); cursor: pointer; }
+.back-to-top[hidden] { display: none; }
+.back-to-top:hover { background: var(--accent-soft); border-color: var(--accent); }
+
 /* ---------- toast ---------- */
-.toast { position: fixed; top: 68px; left: 50%; transform: translateX(-50%); z-index: 30; max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: var(--radius-sm); background: var(--ink); color: var(--surface); font-size: 14px; box-shadow: var(--shadow-lg); animation: toast 4s ease forwards; }
+.toast { position: fixed; top: 68px; left: 50%; transform: translateX(-50%); z-index: 30; width: max-content; max-width: min(560px, calc(100vw - 32px)); padding: 10px 16px; border-radius: var(--radius-sm); background: var(--ink); color: var(--surface); font-size: 14px; box-shadow: var(--shadow-lg); animation: toast 4s ease forwards; }
 .toast-error { background: var(--bad); color: #fff; }
 .toast-success { background: var(--ok); color: #fff; }
+.toast-warn { background: var(--warn); color: #fff; }
+.toast-stale { animation-duration: 5s; }
+.toast + .toast-stale { top: 116px; }
 @keyframes toast { 0% { opacity: 0; transform: translate(-50%, -6px); } 6%, 85% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; visibility: hidden; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 
@@ -119,6 +126,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
 .search-clear { position: absolute; right: 84px; font-size: 13px; color: var(--muted); padding: 4px 6px; }
 .search .btn { min-height: 40px; }
 .filter-row { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.filter-row nav[aria-label="阅读状态"] { margin-left: auto; }
 .segmented { display: inline-flex; padding: 3px; background: var(--surface-2); border-radius: 8px; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 .segmented::-webkit-scrollbar { display: none; }
 .segmented a { padding: 5px 14px; border-radius: 6px; color: var(--ink-2); font-size: 14px; white-space: nowrap; }
@@ -140,6 +148,26 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
 .timeline-label::before { content: ""; position: absolute; left: -19px; top: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 .news-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 .news-card:target { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.news-card.is-read .news-title { color: var(--ink-2); font-weight: 500; }
+.news-card.is-read .news-summary { color: var(--muted); }
+.unread-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+[data-upto] .news-card { -webkit-touch-callout: none; transition: box-shadow .2s, transform .2s; }
+.news-card.is-holding { transform: scale(.99); box-shadow: 0 0 0 3px var(--accent-soft); }
+.card-tools { display: flex; gap: 6px; flex-wrap: wrap; }
+.card-tools form { display: contents; }
+.tool { display: inline-flex; align-items: center; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink-2); font: 500 12.5px/1 var(--font); cursor: pointer; }
+.tool:hover:not(:disabled) { border-color: var(--line-strong); color: var(--ink); }
+.tool:disabled { opacity: .55; cursor: default; }
+.tool-fav[aria-pressed="true"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: var(--warn-soft); }
+.search-history { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
+.search-history[hidden] { display: none; }
+.search-history-label { color: var(--muted); white-space: nowrap; flex: none; }
+.search-history-items { display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.search-history-items::-webkit-scrollbar { display: none; }
+.search-history-items .chip { cursor: pointer; font: inherit; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.search-history-clear { flex: none; margin-left: auto; font-size: 13px; color: var(--muted); }
+.upto-hint { margin-left: 10px; font-size: 12px; }
+.feed-head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .news-main { min-width: 0; display: grid; gap: 6px; align-content: start; }
 .news-kicker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
 .kicker-topic { color: var(--ink-2); font-weight: 500; }
@@ -298,6 +326,9 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
   .filter-row { gap: 8px; }
   .filter-row .segmented { flex: 1 1 auto; }
   .filter-row .segmented a { flex: 1; text-align: center; padding: 6px 8px; }
+  .filter-row .segmented-sm { flex: 1 1 calc(50% - 4px); }
+  .upto-hint { display: block; margin: 2px 0 0; }
+  .tool { min-height: 32px; }
   .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -10px; padding: 0 10px; }
   .chips::-webkit-scrollbar { display: none; }
   .segmented a { padding: 6px 12px; }
@@ -355,7 +386,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
   .kpi { padding: 10px 12px; }
 }
 @media print {
-  .topbar, .filters, .pager, .footer, .sidenav, .news-more summary { display: none !important; }
+  .topbar, .filters, .pager, .footer, .sidenav, .news-more summary, .back-to-top, .card-tools { display: none !important; }
   .news-card { break-inside: avoid; box-shadow: none; }
 }
 

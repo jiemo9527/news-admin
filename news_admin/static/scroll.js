@@ -20,4 +20,15 @@
   window.addEventListener('resize', all);
   new MutationObserver(all).observe(document.body, { childList: true, subtree: true });
   all();
+
+  const backToTop = document.querySelector('[data-back-to-top]');
+  if (backToTop) {
+    const updateBackToTop = () => { backToTop.hidden = window.scrollY < 320; };
+    window.addEventListener('scroll', updateBackToTop, { passive: true });
+    window.addEventListener('pageshow', updateBackToTop);
+    backToTop.addEventListener('click', () => {
+      window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+    });
+    updateBackToTop();
+  }
 })();

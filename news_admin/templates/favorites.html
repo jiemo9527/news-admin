@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% from '_macros.html' import feed_card %}
+{% block title %}我的收藏{% endblock %}
+{% block content %}
+<section class="feed-head">
+  <div>
+    <h1>我的收藏</h1>
+    <p class="muted">共 {{ items | length }} 条，按收藏时间排列。收藏随新闻保留期一起过期。</p>
+  </div>
+</section>
+{% if items %}
+<div class="news-list">
+  {% for item in items %}{{ feed_card(item) }}{% endfor %}
+</div>
+{% else %}
+<div class="empty">
+  <h2>还没有收藏</h2>
+  <p>在新闻卡片上点「收藏」，之后可在这里集中查看。</p>
+  <a class="btn" href="/">去看新闻</a>
+</div>
+{% endif %}
+<script src="/static/app.js?v=4" defer></script>
+{% endblock %}

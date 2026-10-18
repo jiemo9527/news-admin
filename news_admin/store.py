@@ -17,6 +17,9 @@ from .models import Event
 
 FEED_RANGES = {'all': '全部', 'today': '今天', '3d': '3天内', '7d': '7天内'}
 FEED_SORTS = {'time': '最新', 'score': '评级'}
+AUTO_READ_DAYS = 3
+SEARCH_HISTORY_LIMIT = 20
+SEARCH_HISTORY_MERGE_SECONDS = 120
 
 
 @dataclass
@@ -24,6 +27,14 @@ class FeedItem:
     run_id: int
     event: Event
     event_time: str = ''
+    canonical_id: str = ''
+    read: bool = False
+    favorite: bool = False
+    auto_read: bool = False
+
+    @property
+    def is_read(self) -> bool:
+        return self.read or self.auto_read
 
 
 @dataclass
@@ -74,6 +85,26 @@ PUSH_BRIEFS_SCHEMA = """CREATE TABLE IF NOT EXISTS push_briefs (
     run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL,
     payload_json TEXT NOT NULL
+);"""
+
+# 每个账号自己的阅读状态；删除账号时随之删除，事件过保留期后由 cleanup 清理。
+USER_STATE_SCHEMA = """CREATE TABLE IF NOT EXISTS read_events (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    canonical_id TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, canonical_id)
+);
+CREATE TABLE IF NOT EXISTS favorites (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    canonical_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, canonical_id)
+);
+CREATE TABLE IF NOT EXISTS search_history (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    query TEXT NOT NULL,
+    used_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, query)
 );"""
 
 SCHEMA = """
@@ -201,6 +232,7 @@ class Store:
         with self._conn() as conn:
             conn.executescript(SCHEMA)
             conn.executescript(PUSH_BRIEFS_SCHEMA)
+            conn.executescript(USER_STATE_SCHEMA)
             created = not conn.execute("SELECT 1 FROM sqlite_master WHERE name='pushed_events'").fetchone()
             conn.executescript(PUSHED_EVENTS_SCHEMA)
             columns = {row[1] for row in conn.execute('PRAGMA table_info(sources)')}
@@ -442,9 +474,34 @@ class Store:
         "WHERE r2.status='completed' GROUP BY e2.canonical_id) latest "
         'ON latest.canonical_id=e.canonical_id AND latest.run_id=e.run_id '
     )
+    # 限定在某次运行（含）之前的版本：首页渲染与「至此已读」共用同一份快照
+    _LATEST_JOIN_UPTO = (
+        'FROM events e JOIN runs r ON r.id=e.run_id '
+        "JOIN (SELECT e2.canonical_id, MAX(e2.run_id) AS run_id FROM events e2 JOIN runs r2 ON r2.id=e2.run_id "
+        "WHERE r2.status='completed' AND e2.run_id <= ? GROUP BY e2.canonical_id) latest "
+        'ON latest.canonical_id=e.canonical_id AND latest.run_id=e.run_id '
+    )
 
     @staticmethod
-    def _feed_where(range_: str, q: str, topic: str, now: datetime, source: str = '') -> tuple[list[str], list]:
+    def _feed_order(sort: str) -> str:
+        # canonical_id 作唯一兜底，保证首页分页与长按计算的顺序完全一致
+        if sort == 'score':
+            return 'e.score DESC, e.event_time DESC, e.canonical_id DESC'
+        return 'e.event_time DESC, e.score DESC, e.canonical_id DESC'
+
+    def _feed_base(self, where: list[str], params: list, max_run: int | None) -> tuple[str, list]:
+        if max_run is None:
+            return self._LATEST_JOIN + 'WHERE ' + ' AND '.join(where), params
+        return self._LATEST_JOIN_UPTO + 'WHERE ' + ' AND '.join(where), [max_run, *params]
+
+    @staticmethod
+    def auto_read_cutoff(now: datetime | None = None) -> str:
+        """超过 3 天的新闻自动视为已读。"""
+        return tz.iso((tz.to_local(now) if now else tz.now()) - timedelta(days=AUTO_READ_DAYS))
+
+    @staticmethod
+    def _feed_where(range_: str, q: str, topic: str, now: datetime, source: str = '',
+                    user_id: int | None = None, unread: bool = False) -> tuple[list[str], list]:
         where, params = ["r.status='completed'"], []
         if range_ == 'today':
             where.append('e.event_time >= ?'); params.append(tz.iso(tz.day_start(now)))
@@ -460,39 +517,63 @@ class Store:
             where.append("e.sources_text LIKE ? ESCAPE '\\'"); params.append(f'%|{_like_escape(source)}|%')
         for term in q.lower().split()[:8]:
             where.append("e.search_text LIKE ? ESCAPE '\\'"); params.append(f'%{_like_escape(term)}%')
+        if unread and user_id is not None:
+            where.append('e.event_time >= ? AND NOT EXISTS (SELECT 1 FROM read_events re WHERE re.user_id=? AND re.canonical_id=e.canonical_id)')
+            params += [Store.auto_read_cutoff(now), user_id]
         return where, params
+
+    def _with_user_state(self, conn, rows, user_id: int | None, now: datetime) -> list[FeedItem]:
+        items = [FeedItem(run_id=int(r[0]), event=Event.model_validate_json(r[1]), event_time=r[2] or '', canonical_id=r[3]) for r in rows]
+        cutoff = self.auto_read_cutoff(now)
+        ids = [item.canonical_id for item in items]
+        read, favorite = set(), set()
+        if user_id is not None and ids:
+            marks = ','.join('?' * len(ids))
+            read = {r[0] for r in conn.execute(f'SELECT canonical_id FROM read_events WHERE user_id=? AND canonical_id IN ({marks})', (user_id, *ids))}
+            favorite = {r[0] for r in conn.execute(f'SELECT canonical_id FROM favorites WHERE user_id=? AND canonical_id IN ({marks})', (user_id, *ids))}
+        for item in items:
+            item.auto_read = not item.event_time or item.event_time < cutoff
+            item.read = item.canonical_id in read and not item.auto_read
+            item.favorite = item.canonical_id in favorite
+        return items
 
     def feed(
         self, range_: str = 'all', q: str = '', page: int = 1, per_page: int = 20, sort: str = 'time', now: datetime | None = None,
-        topic: str = '', source: str = '',
+        topic: str = '', source: str = '', user_id: int | None = None, unread: bool = False, max_run: int | None = None,
     ) -> FeedPage:
-        """首页汇总：所有已完成运行的事件，同一事件只取最新版本；按北京时间自然日筛选，关键词需全部命中。"""
+        """首页汇总：所有已完成运行的事件，同一事件只取最新版本；按北京时间自然日筛选，关键词需全部命中。
+
+        max_run：只看不晚于该次运行的版本，使渲染结果与页面上「至此已读」的计算基于同一快照。
+        """
         now = tz.to_local(now) if now else tz.now()
-        where, params = self._feed_where(range_, q, topic, now, source)
-        base = self._LATEST_JOIN + 'WHERE ' + ' AND '.join(where)
-        order = 'e.score DESC, e.event_time DESC' if sort == 'score' else 'e.event_time DESC, e.score DESC'
+        where, params = self._feed_where(range_, q, topic, now, source, user_id, unread)
+        base, params = self._feed_base(where, params, max_run)
+        order = self._feed_order(sort)
         page = max(1, page)
         with self._conn() as conn:
             total = conn.execute(f'SELECT COUNT(*) {base}', params).fetchone()[0]
             rows = conn.execute(
-                f'SELECT e.run_id, e.payload_json, e.event_time {base} ORDER BY {order} LIMIT ? OFFSET ?', (*params, per_page, (page - 1) * per_page)
+                f'SELECT e.run_id, e.payload_json, e.event_time, e.canonical_id {base} ORDER BY {order} LIMIT ? OFFSET ?',
+                (*params, per_page, (page - 1) * per_page),
             ).fetchall()
-        items = [FeedItem(run_id=int(r[0]), event=Event.model_validate_json(r[1]), event_time=r[2]) for r in rows]
+            items = self._with_user_state(conn, rows, user_id, now)
         return FeedPage(items=items, total=int(total), page=page, per_page=per_page)
 
-    def topic_counts(self, range_: str = 'all', q: str = '', now: datetime | None = None, source: str = '') -> dict[str, int]:
+    def topic_counts(self, range_: str = 'all', q: str = '', now: datetime | None = None, source: str = '',
+                     user_id: int | None = None, unread: bool = False) -> dict[str, int]:
         now = tz.to_local(now) if now else tz.now()
-        where, params = self._feed_where(range_, q, '', now, source)
+        where, params = self._feed_where(range_, q, '', now, source, user_id, unread)
         rows = self._rows(
             f"SELECT e.topic, COUNT(*) AS n {self._LATEST_JOIN} WHERE {' AND '.join(where)} AND e.topic != '' GROUP BY e.topic",
             tuple(params),
         )
         return {r['topic']: r['n'] for r in rows}
 
-    def source_counts(self, range_: str = 'all', q: str = '', topic: str = '', now: datetime | None = None) -> dict[str, int]:
+    def source_counts(self, range_: str = 'all', q: str = '', topic: str = '', now: datetime | None = None,
+                      user_id: int | None = None, unread: bool = False) -> dict[str, int]:
         """首页「来源」下拉框：当前筛选条件下每个来源有多少条事件。"""
         now = tz.to_local(now) if now else tz.now()
-        where, params = self._feed_where(range_, q, topic, now)
+        where, params = self._feed_where(range_, q, topic, now, '', user_id, unread)
         rows = self._rows(f"SELECT e.sources_text {self._LATEST_JOIN} WHERE {' AND '.join(where)}", tuple(params))
         counts: dict[str, int] = {}
         for row in rows:
@@ -517,7 +598,93 @@ class Store:
             removed = conn.execute("DELETE FROM runs WHERE started_at < ? AND status != 'running'", (cutoff,)).rowcount
             # 事件还有任一版本在库时保留推送记录，避免长期持续更新的事件被再次推送
             conn.execute('DELETE FROM pushed_events WHERE sent_at < ? AND canonical_id NOT IN (SELECT canonical_id FROM events)', (cutoff,))
+            # 事件全部过期后，阅读与收藏记录随之清理
+            for table in ('read_events', 'favorites'):
+                conn.execute(f'DELETE FROM {table} WHERE canonical_id NOT IN (SELECT canonical_id FROM events)')
             return removed
+
+    # ---------- 个人阅读状态（每个账号独立） ----------
+    def canonical_exists(self, canonical_id: str) -> bool:
+        return bool(canonical_id) and bool(self._rows(
+            "SELECT 1 FROM events e JOIN runs r ON r.id=e.run_id WHERE e.canonical_id=? AND r.status='completed' LIMIT 1", (canonical_id,)))
+
+    def set_read(self, user_id: int, canonical_ids, value: bool = True) -> int:
+        ids = [c for c in dict.fromkeys(canonical_ids) if c]
+        with self._conn() as conn:
+            if value:
+                now = _now()
+                conn.executemany('INSERT OR IGNORE INTO read_events(user_id, canonical_id, read_at) VALUES (?,?,?)', [(user_id, c, now) for c in ids])
+            else:
+                conn.executemany('DELETE FROM read_events WHERE user_id=? AND canonical_id=?', [(user_id, c) for c in ids])
+        return len(ids)
+
+    def set_favorite(self, user_id: int, canonical_id: str, value: bool) -> None:
+        with self._conn() as conn:
+            if value:
+                conn.execute('INSERT OR IGNORE INTO favorites(user_id, canonical_id, created_at) VALUES (?,?,?)', (user_id, canonical_id, _now()))
+            else:
+                conn.execute('DELETE FROM favorites WHERE user_id=? AND canonical_id=?', (user_id, canonical_id))
+
+    def mark_read_upto(self, user_id: int, canonical_id: str, max_run: int, range_: str = 'all', q: str = '', sort: str = 'time',
+                       topic: str = '', source: str = '', unread: bool = False, now: datetime | None = None) -> int | None:
+        """按页面当时的筛选和排序，把该条及其上方（跨页）全部标为已读。页面打开后新到的版本不受影响。"""
+        now = tz.to_local(now) if now else tz.now()
+        where, params = self._feed_where(range_, q, topic, now, source, user_id, unread)
+        base, params = self._feed_base(where, params, max_run)
+        rows = self._rows(f'SELECT e.canonical_id {base} ORDER BY {self._feed_order(sort)}', tuple(params))
+        ids = [r['canonical_id'] for r in rows]
+        if canonical_id not in ids:
+            return None
+        return self.set_read(user_id, ids[:ids.index(canonical_id) + 1])
+
+    def mark_run_read(self, user_id: int, run_id: int) -> int:
+        ids = [r['canonical_id'] for r in self._rows('SELECT canonical_id FROM events WHERE run_id=? AND in_brief=1', (run_id,))]
+        return self.set_read(user_id, ids)
+
+    def mark_events_read(self, user_id: int, run_id: int, event_ids: list[str]) -> int:
+        return self.set_read(user_id, self.canonical_ids(run_id, event_ids).values())
+
+    def favorites(self, user_id: int, now: datetime | None = None) -> list[FeedItem]:
+        """收藏列表：按收藏时间倒序，每个事件显示最新版本。"""
+        now = tz.to_local(now) if now else tz.now()
+        with self._conn() as conn:
+            rows = conn.execute(
+                f'SELECT e.run_id, e.payload_json, e.event_time, e.canonical_id {self._LATEST_JOIN} '
+                'JOIN favorites f ON f.canonical_id=e.canonical_id AND f.user_id=? '
+                "WHERE r.status='completed' ORDER BY f.created_at DESC, f.rowid DESC", (user_id,),
+            ).fetchall()
+            return self._with_user_state(conn, rows, user_id, now)
+
+    def search_history(self, user_id: int) -> list[str]:
+        return [r['query'] for r in self._rows(
+            'SELECT query FROM search_history WHERE user_id=? ORDER BY used_at DESC, rowid DESC LIMIT ?', (user_id, SEARCH_HISTORY_LIMIT))]
+
+    def add_search_history(self, user_id: int, query: str) -> list[str]:
+        """保存关键词；连续输入（新词以 2 分钟内的上一条为前缀扩展）只保留最终那条。"""
+        query = ' '.join(query.split())[:60]
+        if not query:
+            return self.search_history(user_id)
+        now = tz.now()
+        with self._conn() as conn:
+            last = conn.execute('SELECT query, used_at FROM search_history WHERE user_id=? ORDER BY used_at DESC, rowid DESC LIMIT 1',
+                                (user_id,)).fetchone()
+            if last and last[0] != query and query.startswith(last[0]) and last[1] >= tz.iso(now - timedelta(seconds=SEARCH_HISTORY_MERGE_SECONDS)):
+                conn.execute('DELETE FROM search_history WHERE user_id=? AND query=?', (user_id, last[0]))
+            conn.execute('INSERT INTO search_history(user_id, query, used_at) VALUES (?,?,?) '
+                         'ON CONFLICT(user_id, query) DO UPDATE SET used_at=excluded.used_at', (user_id, query, tz.iso(now)))
+            conn.execute('DELETE FROM search_history WHERE user_id=? AND rowid NOT IN '
+                         '(SELECT rowid FROM search_history WHERE user_id=? ORDER BY used_at DESC, rowid DESC LIMIT ?)',
+                         (user_id, user_id, SEARCH_HISTORY_LIMIT))
+        return self.search_history(user_id)
+
+    def clear_search_history(self, user_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute('DELETE FROM search_history WHERE user_id=?', (user_id,))
+
+    def last_content_at(self) -> str | None:
+        """最近一次有新内容入库的时间（无新闻时为 None）。"""
+        rows = self._rows("SELECT MAX(e.created_at) AS at FROM events e JOIN runs r ON r.id=e.run_id WHERE r.status='completed'")
+        return rows[0]['at'] if rows else None
 
     def load_events(self, run_id: int, brief_only: bool = True) -> list[Event]:
         """brief_only=True：只取进入该期简报的事件；False：该次运行入库的全部事件。"""
