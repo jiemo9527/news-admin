@@ -27,7 +27,7 @@
   <div class="search-history" data-search-history {% if not history %}hidden{% endif %}>
     <span class="search-history-label">最近搜索</span>
     <span class="search-history-items" data-history-items>
-      {% for h in history %}<button type="button" class="chip" data-q="{{ h }}">{{ h }}</button>{% endfor %}
+      {% for h in history %}<span class="history-chip"><button type="button" class="chip" data-q="{{ h }}">{{ h }}</button><button type="button" class="history-remove" data-history-remove="{{ h }}" aria-label="删除搜索记录「{{ h }}」" title="删除">×</button></span>{% endfor %}
     </span>
     <button type="button" class="link search-history-clear" data-history-clear>清除</button>
   </div>
@@ -107,5 +107,5 @@
 </nav>
 {% endif %}
 </div>
-<script src="/static/app.js?v=4" defer></script>
+<script src="/static/app.js?v=5" defer></script>
 {% endblock %}

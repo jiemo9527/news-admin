@@ -191,6 +191,24 @@ def test_search_history_is_per_user(tmp_path):
     assert '只读用户关键词' in viewer.get('/').text and '只读用户关键词' not in client.get('/').text
 
 
+def test_search_history_single_item_can_be_removed(tmp_path):
+    rt, client = make_client(tmp_path)
+    viewer = make_viewer(client)
+    for q in ('美联储', '日本 地震', '原油'):
+        client.post('/me/search-history', data={'q': q}, headers=FETCH)
+    viewer.post('/me/search-history', data={'q': '日本 地震'}, headers=FETCH)
+    soup = BeautifulSoup(client.get('/').text, 'html.parser')
+    remove = soup.select_one('[data-history-remove="日本 地震"]')
+    assert remove is not None and remove['aria-label'] == '删除搜索记录「日本 地震」' and remove.name == 'button'
+    response = client.post('/me/search-history/remove', data={'q': '  日本   地震 '}, headers=FETCH)
+    assert response.json() == {'items': ['原油', '美联储']}
+    assert '日本 地震' in viewer.get('/').text  # 只删自己的
+    assert client.post('/me/search-history/remove', data={'q': '不存在'}, headers=FETCH).json() == {'items': ['原油', '美联储']}
+    nojs = client.post('/me/search-history/remove', data={'q': '原油'}, headers={'referer': 'http://testserver/?q=x'}, follow_redirects=False)
+    assert nojs.status_code == 303 and nojs.headers['location'] == '/?q=x'
+    assert rt.store.search_history(rt.store.get_user_by_name('admin')['id']) == ['美联储']
+
+
 def test_stale_warning_appears_after_24_hours_without_new_content(tmp_path, monkeypatch):
     rt, client = make_client(tmp_path)
     save(rt.store, [ev('a', '新闻A', NOW)])

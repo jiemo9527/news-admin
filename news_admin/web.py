@@ -390,6 +390,10 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         rt.store.clear_search_history(request.state.user['id'])
         return personal_result(request, {'items': []})
 
+    @app.post('/me/search-history/remove')
+    def remove_search(request: Request, q: str = Form('')):
+        return personal_result(request, {'items': rt.store.remove_search_history(request.state.user['id'], q)})
+
     @app.get('/favicon.ico', include_in_schema=False)
     def favicon():
         return RedirectResponse('/static/favicon.svg', status_code=301)

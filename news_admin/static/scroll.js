@@ -1,6 +1,6 @@
 // 横向滑动区域：边缘渐隐提示，并把当前项滚到可见处
 (() => {
-  const SEL = '.chips, .brief-nav-track, .sidenav-links, .segmented';
+  const SEL = '.chips, .brief-nav-track, .sidenav-links, .segmented, .search-history-items';
   const update = (el) => {
     const over = el.scrollWidth > el.clientWidth + 2;
     el.classList.toggle('fade-end', over && el.scrollLeft + el.clientWidth < el.scrollWidth - 2);

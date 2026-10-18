@@ -681,6 +681,11 @@ class Store:
         with self._conn() as conn:
             conn.execute('DELETE FROM search_history WHERE user_id=?', (user_id,))
 
+    def remove_search_history(self, user_id: int, query: str) -> list[str]:
+        with self._conn() as conn:
+            conn.execute('DELETE FROM search_history WHERE user_id=? AND query=?', (user_id, ' '.join(query.split())[:60]))
+        return self.search_history(user_id)
+
     def last_content_at(self) -> str | None:
         """最近一次有新内容入库的时间（无新闻时为 None）。"""
         rows = self._rows("SELECT MAX(e.created_at) AS at FROM events e JOIN runs r ON r.id=e.run_id WHERE r.status='completed'")

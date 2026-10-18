@@ -165,7 +165,11 @@ fieldset.field { border: 0; padding: 0; margin: 0; gap: 8px; }
 .search-history-items { display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .search-history-items::-webkit-scrollbar { display: none; }
 .search-history-items .chip { cursor: pointer; font: inherit; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-.search-history-clear { flex: none; margin-left: auto; font-size: 13px; color: var(--muted); }
+.history-chip { display: inline-flex; align-items: center; flex: none; }
+.history-chip .chip { border-top-right-radius: 0; border-bottom-right-radius: 0; border-right: 0; padding-right: 6px; }
+.history-remove { display: inline-grid; place-items: center; width: 26px; align-self: stretch; padding: 0; border: 1px solid var(--line); border-left: 0; border-radius: 0 999px 999px 0; background: var(--surface); color: var(--muted); font: 15px/1 var(--font); cursor: pointer; }
+.history-remove:hover { color: var(--bad); background: var(--bad-soft); }
+.search-history-clear { flex: none; margin-left: auto; padding-left: 6px; font-size: 13px; color: var(--muted); }
 .upto-hint { margin-left: 10px; font-size: 12px; }
 .feed-head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .news-main { min-width: 0; display: grid; gap: 6px; align-content: start; }

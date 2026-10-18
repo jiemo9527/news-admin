@@ -60,9 +60,15 @@
   const renderHistory = (items) => {
     if (!historyBox || !historyItems) return;
     historyItems.replaceChildren(...items.map((text) => {
+      const wrap = document.createElement('span');
+      wrap.className = 'history-chip';
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'chip'; b.dataset.q = text; b.textContent = text;
-      return b;
+      const x = document.createElement('button');
+      x.type = 'button'; x.className = 'history-remove'; x.dataset.historyRemove = text; x.title = '删除'; x.textContent = '×';
+      x.setAttribute('aria-label', `删除搜索记录「${text}」`);
+      wrap.append(b, x);
+      return wrap;
     }));
     historyBox.hidden = !items.length;
   };
@@ -81,6 +87,18 @@
   };
   const rememberSoon = () => { clearTimeout(historyTimer); historyTimer = setTimeout(remember, 1500); };
   historyBox?.addEventListener('click', (e) => {
+    const remove = e.target.closest('[data-history-remove]');
+    if (remove) {
+      // 单条删除：同样取消待保存的关键词，避免刚删的词又被写回
+      clearTimeout(historyTimer);
+      const generation = ++historyGeneration;
+      const data = new FormData(); data.set('q', remove.dataset.historyRemove);
+      remove.closest('.history-chip')?.remove();
+      if (!historyItems?.children.length) historyBox.hidden = true;
+      historyQueue = historyQueue.then(() => post('/me/search-history/remove', data))
+        .then((r) => { if (generation === historyGeneration) renderHistory(r.items); }).catch(() => {});
+      return;
+    }
     const chip = e.target.closest('[data-q]');
     if (chip) {
       form.elements.q.value = chip.dataset.q;
