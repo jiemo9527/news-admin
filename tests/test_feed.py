@@ -122,3 +122,40 @@ def test_recompute_merges_legacy_rows_by_shared_url(tmp_path):
         conn.execute("UPDATE events SET canonical_id = run_id || ':' || id")
         conn.execute("DELETE FROM settings WHERE key='feed_index_version'")
     assert [e.summary.headline for e in Store(tmp_path / 'n.db').feed(now=NOW).events] == ['新版本']
+
+
+def test_shared_article_url_wins_over_update_reference_to_a_different_event(tmp_path):
+    """同一篇报道只属于一个事件：即使「更新」指向故事线里另一条（后续）事件，也按共享链接合并，首页不出现两条相同新闻。"""
+    store = Store(tmp_path / 'n.db')
+    first = save(store, [ev('rt', '伊朗称两艘油轮触雷', NOW - timedelta(hours=8))])
+    follow_ref = EventRef(run_id=first, event_id='rt', headline='伊朗称两艘油轮触雷', relation='follow_up')
+    second = save(store, [ev('cn', '伊朗海军称多艘油轮起火', NOW - timedelta(hours=3), previous=[follow_ref], story='rt')])
+    update_ref = EventRef(run_id=second, event_id='cn', headline='伊朗海军称多艘油轮起火', relation='update')
+    again = ev('rt', '伊朗称两艘油轮触雷', NOW - timedelta(hours=8), previous=[update_ref, follow_ref], is_update=True, story='rt')
+    save(store, [again])
+    headlines = [e.summary.headline for e in store.feed(now=NOW).events]
+    assert sorted(headlines) == ['伊朗海军称多艘油轮起火', '伊朗称两艘油轮触雷']
+    # 线上已有的旧数据：索引规则升级后重算即可合并
+    with store._conn() as conn:
+        conn.execute("UPDATE events SET canonical_id = ? WHERE run_id=3", (f'{second}:cn',))
+        conn.execute("UPDATE settings SET value='2' WHERE key='feed_index_version'")
+    assert sorted(e.summary.headline for e in Store(tmp_path / 'n.db').feed(now=NOW).events) == sorted(headlines)
+
+
+def test_rebuild_carries_push_read_and_favorite_records_to_the_new_key(tmp_path):
+    """索引重算换了 canonical_id 时，推送记录、已读和收藏跟着迁移：不重复推送、阅读状态不丢。"""
+    store = Store(tmp_path / 'n.db')
+    save(store, [ev('a', '泽连斯基在峰会发言', NOW - timedelta(hours=6))])
+    uid = store.create_user('reader', 'x', 'viewer')
+    with store._conn() as conn:
+        conn.execute("UPDATE events SET canonical_id='7:deleted'")   # 旧规则留下的、指向已删除事件的键
+        conn.execute("INSERT INTO pushed_events VALUES (1, '7:deleted', ?)", (tz.iso(NOW),))
+        conn.execute("INSERT INTO read_events VALUES (?, '7:deleted', ?)", (uid, tz.iso(NOW)))
+        conn.execute("INSERT INTO favorites VALUES (?, '7:deleted', ?)", (uid, tz.iso(NOW)))
+        conn.execute("UPDATE settings SET value='2' WHERE key='feed_index_version'")
+    store = Store(tmp_path / 'n.db')
+    key = store._rows('SELECT canonical_id FROM events')[0]['canonical_id']
+    assert key == '1:a'
+    assert key in store.pushed_canonical_ids(1)
+    item = store.feed(user_id=uid, now=NOW).items[0]
+    assert item.read and item.favorite

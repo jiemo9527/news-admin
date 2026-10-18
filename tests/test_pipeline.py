@@ -140,6 +140,25 @@ def test_low_value_articles_are_filtered_with_reason(tmp_path):
     assert all('长江' not in e.summary.headline for e in store.load_events(run_id))
 
 
+def test_republished_url_is_unchanged_even_after_a_follow_up_in_the_same_story(tmp_path):
+    """同一故事线出现后续报道后，旧报道链接再次被抓到，不能当成后续报道的「更新」重新入库。"""
+    from news_admin.models import Relation
+    store, pipeline = make_pipeline(tmp_path)
+    pipeline.run('manual')
+    follow = {'D': [article('7', 'D', 'https://d/7', '美股因降息大涨', '美联储降息后美股三大指数收涨2%。')]}
+    store.seed_sources([{'name': 'D', 'feed_url': 'https://D/rss'}])
+    VECTORS['美股因降息大涨'] = [0.8, 0.6]
+    pipeline.deps.fetch = lambda source: FetchResult(source=source, articles=follow.get(source.name, []))
+    pipeline.deps.continuity_judge = lambda new, old: Relation.follow_up
+    pipeline.run('manual')
+    again = {'C': ARTICLES['C']}  # 第一次已发布过的 https://c/1
+    pipeline.deps.fetch = lambda source: FetchResult(source=source, articles=again.get(source.name, []))
+    run_id = pipeline.run('manual')
+    assert store.load_events(run_id, brief_only=False) == []
+    assert store.get_run(run_id)['stats']['events_unchanged'] == 1
+    assert len(store.feed().events) == 3
+
+
 def test_follow_up_event_references_previous_story(tmp_path):
     from news_admin.models import Relation
     store, pipeline = make_pipeline(tmp_path)

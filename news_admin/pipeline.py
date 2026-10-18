@@ -225,11 +225,23 @@ class Pipeline:
         候选：共享 URL 直接视为同一事件；否则按向量相似度 + 共同实体取前几个候选交给 LLM 判断。
         """
         cc = self.deps.continuity_config
-        history = self.store.recent_events(days=cc.lookback_days, exclude_run=run_id)
+        everything = self.store.recent_events(days=cc.lookback_days, exclude_run=run_id, per_story=False)
+        # 相似度候选：每条故事线只取最新一次；链接归属：查全部已发布事件（同一故事线的早期报道也算），
+        # 否则后续报道出现后，旧报道再被抓到会被误当成后续报道的「更新」重复入库
+        seen_stories: set[str] = set()
+        history = []
+        for rid, old in everything:
+            story = old.story_id or old.id
+            if story not in seen_stories:
+                seen_stories.add(story)
+                history.append((rid, old))
         stats = {'events_unchanged': 0, 'events_updated': 0, 'events_follow_up': 0, 'continuity_judge_calls': 0}
         if not history or not events:
             return events, stats
-        url_owner = {a.url: (rid, old) for rid, old in history for a in old.articles}
+        url_owner: dict[str, tuple[int, Event]] = {}
+        for rid, old in everything:  # 按运行从新到旧，同一链接归最近一次发布它的事件
+            for a in old.articles:
+                url_owner.setdefault(a.url, (rid, old))
         old_vectors = self.deps.embed([_event_text(old) for _, old in history])
         new_vectors = self.deps.embed([_event_text(e) for e in events])
         kept: list[Event] = []

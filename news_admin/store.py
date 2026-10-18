@@ -403,22 +403,32 @@ class Store:
     def _canonical_id(self, conn, run_id: int, event: Event) -> str:
         """同一事件的多个版本共用一个 canonical_id，首页只显示最新版本；后续进展（follow_up）是新事件，单独成条。
 
-        判定为同一事件：① 流水线标记为「更新」并引用了上一版本；② 与更早的事件共享任何一篇报道链接。
+        判定为同一事件（按顺序）：
+        ① 全部报道链接都已在更早的同一事件中发布过 → 只是重复抓到，归入那个事件；
+        ② 流水线标记为「更新」并引用了上一版本；
+        ③ 与更早的事件共享任何一篇报道链接。
         """
+        urls = list({a.url for a in event.articles})
+        owners: list[str] = []
+        if urls:
+            marks = ','.join('?' * len(urls))
+            owners = [r[0] for r in conn.execute(
+                f"SELECT e.canonical_id FROM event_urls u JOIN events e ON e.run_id=u.run_id AND e.id=u.event_id "
+                f"WHERE u.url IN ({marks}) AND u.run_id < ? AND e.canonical_id != '' ORDER BY u.run_id DESC",
+                (*urls, run_id),
+            ).fetchall()]
+            for owner in dict.fromkeys(owners):
+                covered = {r[0] for r in conn.execute(
+                    f"SELECT u.url FROM event_urls u JOIN events e ON e.run_id=u.run_id AND e.id=u.event_id "
+                    f"WHERE u.url IN ({marks}) AND u.run_id < ? AND e.canonical_id=?", (*urls, run_id, owner))}
+                if covered >= set(urls):
+                    return owner
         ref = event.previous[0] if event.previous else None
         if event.is_update and ref and ref.relation == 'update':
             row = conn.execute('SELECT canonical_id FROM events WHERE run_id=? AND id=?', (ref.run_id, ref.event_id)).fetchone()
             return row[0] if row and row[0] else f'{ref.run_id}:{ref.event_id}'
-        urls = list({a.url for a in event.articles})
-        if urls:
-            marks = ','.join('?' * len(urls))
-            row = conn.execute(
-                f"SELECT e.canonical_id FROM event_urls u JOIN events e ON e.run_id=u.run_id AND e.id=u.event_id "
-                f"WHERE u.url IN ({marks}) AND u.run_id < ? AND e.canonical_id != '' ORDER BY u.run_id DESC LIMIT 1",
-                (*urls, run_id),
-            ).fetchone()
-            if row:
-                return row[0]
+        if owners:
+            return owners[0]
         return f'{run_id}:{event.id}'
 
     def save_events(self, run_id: int, events: list[Event]) -> None:
@@ -444,25 +454,42 @@ class Store:
                     for source in [article.source, *article.duplicate_sources]:
                         conn.execute('INSERT INTO event_urls VALUES (?,?,?,?)', (run_id, event.id, article.url, source))
 
-    FEED_INDEX_VERSION = '2'
+    FEED_INDEX_VERSION = '3'
 
     def _backfill_feed_columns(self) -> None:
-        """补齐首页索引列；索引规则升级时（版本号变化）全部重算。"""
+        """补齐首页索引列；索引规则升级时（版本号变化）全部重算。
+
+        重算可能让同一事件换成新的 canonical_id（或多个旧键合并成一个）：推送记录、已读、收藏按
+        「旧键 → 新键」迁移，避免重复推送、阅读状态丢失。
+        """
         with self._conn() as conn:
             row = conn.execute("SELECT value FROM settings WHERE key='feed_index_version'").fetchone()
             rebuild = not row or row[0] != self.FEED_INDEX_VERSION
+            old_keys = dict(conn.execute('SELECT rowid, canonical_id FROM events').fetchall()) if rebuild else {}
             if rebuild:
                 conn.execute("UPDATE events SET canonical_id=''")
             rows = conn.execute(
                 "SELECT rowid, run_id, payload_json, created_at FROM events "
                 "WHERE canonical_id='' OR event_time IS NULL OR search_text='' OR sources_text='' ORDER BY run_id, rank"
             ).fetchall()
+            moved: set[tuple[str, str]] = set()
             for rowid, run_id, payload, created in rows:
                 event = Event.model_validate_json(payload)
+                key = self._canonical_id(conn, run_id, event)
                 conn.execute(
                     'UPDATE events SET canonical_id=?, event_time=?, search_text=?, sources_text=? WHERE rowid=?',
-                    (self._canonical_id(conn, run_id, event), _event_time(event, created), _search_text(event), _sources_text(event), rowid),
+                    (key, _event_time(event, created), _search_text(event), _sources_text(event), rowid),
                 )
+                old = old_keys.get(rowid)
+                if old and old != key:
+                    moved.add((old, key))
+            for old, new in sorted(moved):
+                # 复制而非移动：旧键可能仍被其他版本使用；多记一条只会更保守（不重复推送、不丢已读）
+                for table, cols in (('pushed_events', 'channel_id, canonical_id, sent_at'),
+                                    ('read_events', 'user_id, canonical_id, read_at'),
+                                    ('favorites', 'user_id, canonical_id, created_at')):
+                    owner, _, at = cols.split(', ')
+                    conn.execute(f'INSERT OR IGNORE INTO {table}({cols}) SELECT {owner}, ?, {at} FROM {table} WHERE canonical_id=?', (new, old))
             conn.execute(
                 "INSERT INTO settings VALUES ('feed_index_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (self.FEED_INDEX_VERSION,),
@@ -697,8 +724,8 @@ class Store:
         rows = self._rows(sql, (run_id,))
         return [Event.model_validate_json(r['payload_json']) for r in rows]
 
-    def recent_events(self, days: float = 7, exclude_run: int | None = None) -> list[tuple[int, Event]]:
-        """近 N 天已完成运行中发布的事件，按运行从新到旧；同一故事线只保留最新一次。"""
+    def recent_events(self, days: float = 7, exclude_run: int | None = None, per_story: bool = True) -> list[tuple[int, Event]]:
+        """近 N 天已完成运行中发布的事件，按运行从新到旧；per_story=True 时同一故事线只保留最新一次。"""
         since = tz.iso(tz.now() - timedelta(days=days))
         rows = self._rows(
             'SELECT e.run_id, e.payload_json FROM events e JOIN runs r ON r.id=e.run_id '
@@ -710,7 +737,7 @@ class Store:
         for row in rows:
             event = Event.model_validate_json(row['payload_json'])
             story = event.story_id or event.id
-            if story in seen_stories:
+            if per_story and story in seen_stories:
                 continue
             seen_stories.add(story)
             result.append((int(row['run_id']), event))
