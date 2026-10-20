@@ -17,7 +17,7 @@
     return '/' + (qs ? '?' + qs : '');
   };
 
-  const load = async (url, push = true) => {
+  const load = async (url, push = true, resetScroll = false) => {
     if (controller) controller.abort();
     controller = new AbortController();
     resultsEl().setAttribute('aria-busy', 'true');
@@ -41,6 +41,8 @@
       }
       if (push) history.replaceState(null, '', url);
       bind();
+      // 吸顶筛选栏的 offsetTop 会随滚动变化；分页应在新结果替换后回到页首。
+      if (fresh && resetScroll) window.scrollTo({ top: 0, behavior: 'instant' });
     } catch (err) {
       if (err.name !== 'AbortError') location.href = url;
     } finally {
@@ -135,8 +137,7 @@
           const field = form.elements[name];
           if (field) field.value = url.searchParams.get(name) || (name === 'range' ? 'all' : name === 'sort' ? 'time' : '');
         }
-        load(url.pathname + url.search);
-        if (a.closest('.pager')) window.scrollTo({ top: form.offsetTop - 70, behavior: 'smooth' });
+        load(url.pathname + url.search, true, Boolean(a.closest('.pager')));
       });
     });
   };
