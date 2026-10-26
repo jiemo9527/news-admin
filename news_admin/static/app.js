@@ -11,7 +11,7 @@
     const params = new URLSearchParams();
     for (const [key, value] of new FormData(form)) {
       const v = String(value).trim();
-      if (v && !(key === 'range' && v === 'all') && !(key === 'sort' && v === 'time')) params.set(key, v);
+      if (v && !(key === 'range' && v === 'all') && !(key === 'sort' && v === 'time') && !(key === 'per' && v === '20')) params.set(key, v);
     }
     const qs = params.toString();
     return '/' + (qs ? '?' + qs : '');
@@ -133,9 +133,9 @@
         if (e.metaKey || e.ctrlKey || e.shiftKey) return;
         e.preventDefault();
         const url = new URL(a.href);
-        for (const name of ['range', 'sort', 'topic', 'unread']) {
+        for (const name of ['range', 'sort', 'topic', 'unread', 'per']) {
           const field = form.elements[name];
-          if (field) field.value = url.searchParams.get(name) || (name === 'range' ? 'all' : name === 'sort' ? 'time' : '');
+          if (field) field.value = url.searchParams.get(name) || (name === 'range' ? 'all' : name === 'sort' ? 'time' : name === 'per' ? field.value : '');
         }
         load(url.pathname + url.search, true, Boolean(a.closest('.pager')));
       });
@@ -236,6 +236,96 @@
   // 长按后松手不触发点击、文字选择或系统菜单
   document.addEventListener('click', (e) => { if (held) { e.preventDefault(); e.stopPropagation(); held = false; } }, true);
   document.addEventListener('contextmenu', (e) => { if (e.target.closest('[data-upto] .news-card') && (holdTimer || held)) e.preventDefault(); });
+})();
+
+// ---------- 文章分析：gpt-5.6-luna 联网检索，结果浮层显示 ----------
+(() => {
+  if (!window.fetch) return;
+  let panel = null, owner = null, controller = null;
+  const close = () => {
+    controller?.abort(); controller = null;
+    panel?.remove(); panel = null;
+    owner?.setAttribute('aria-expanded', 'false'); owner?.focus({ preventScroll: true }); owner = null;
+  };
+  const place = () => {
+    if (!panel || !owner) return;
+    if (window.matchMedia('(max-width: 760px)').matches) { panel.style.left = panel.style.top = ''; return; }
+    const r = owner.getBoundingClientRect(), w = panel.offsetWidth, h = panel.offsetHeight;
+    const left = Math.min(Math.max(12, r.left), window.innerWidth - w - 12);
+    const below = r.bottom + 8, above = r.top - h - 8;
+    const top = below + h <= window.innerHeight - 12 || above < 64 ? Math.min(below, window.innerHeight - h - 12) : above;
+    panel.style.left = `${left}px`; panel.style.top = `${Math.max(64, top)}px`;
+  };
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  const render = (body, data) => {
+    body.replaceChildren();
+    for (const block of String(data.text).split(/\n(?=【)/)) {
+      const m = block.match(/^【([^】]{1,12})】\s*([\s\S]*)$/);
+      const section = el('section', 'insight-section');
+      if (m) section.append(el('h3', '', m[1]));
+      for (const line of (m ? m[2] : block).split('\n').map((s) => s.trim()).filter(Boolean)) section.append(el('p', '', line.replace(/^[-•·]\s*/, '')));
+      body.append(section);
+    }
+    if (data.sources?.length) {
+      const refs = el('section', 'insight-section insight-sources');
+      refs.append(el('h3', '', '检索来源'));
+      const list = el('ol');
+      for (const s of data.sources) {
+        const a = el('a', '', s.title || s.url);
+        a.href = s.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = s.url;
+        const li = el('li'); li.append(a); list.append(li);
+      }
+      refs.append(list); body.append(refs);
+    }
+    const when = data.created_at ? data.created_at.slice(5, 16).replace('T', ' ') : '';
+    const note = `${data.model}${data.searched ? ' · 已联网检索' : ' · 未执行联网检索'}${when ? ` · ${when}` : ''}${data.cached ? ' · 缓存' : ''}`;
+    body.append(el('p', 'insight-meta', `${note}。AI 生成内容，可能有误，请以原始来源为准。`));
+  };
+  const open = async (button) => {
+    const card = button.closest('.news-card');
+    if (owner === button) { close(); return; }
+    close();
+    owner = button; button.setAttribute('aria-expanded', 'true');
+    panel = el('div', 'insight-pop');
+    panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'false');
+    const head = el('div', 'insight-head');
+    const title = el('strong', '', '分析：' + (card.querySelector('.news-title')?.textContent.trim() || ''));
+    title.id = 'insight-title'; panel.setAttribute('aria-labelledby', title.id);
+    const x = el('button', 'insight-close', '×'); x.type = 'button'; x.setAttribute('aria-label', '关闭分析');
+    x.addEventListener('click', close);
+    head.append(title, x);
+    const body = el('div', 'insight-body');
+    body.append(el('p', 'insight-loading', '正在联网检索相关信息与最新进展，通常需要 15–60 秒…'));
+    body.setAttribute('aria-live', 'polite');
+    panel.append(head, body);
+    document.body.append(panel);
+    place(); x.focus({ preventScroll: true });
+    const mine = controller = new AbortController();
+    const data = new FormData(); data.set('canonical', card.dataset.canonical);
+    try {
+      const r = await fetch('/me/analyze', { method: 'POST', body: data, signal: mine.signal, headers: { 'X-Requested-With': 'fetch' } });
+      if (r.redirected && new URL(r.url).pathname === '/login') { location.href = r.url; return; }
+      const json = await r.json().catch(() => ({}));
+      if (controller !== mine || !panel) return;
+      if (!r.ok) throw new Error(typeof json.detail === 'string' ? json.detail : `分析失败（HTTP ${r.status}）`);
+      render(body, json);
+    } catch (err) {
+      if (err.name === 'AbortError' || controller !== mine || !panel) return;
+      body.replaceChildren(el('p', 'insight-error', err.message || '分析失败，请稍后重试'));
+    }
+    place();
+  };
+  document.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-analyze]');
+    if (button) { e.preventDefault(); open(button); return; }
+    if (panel && !e.target.closest('.insight-pop')) close();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && panel) close(); });
+  window.addEventListener('resize', place);
+  window.addEventListener('scroll', () => { if (panel && owner && !window.matchMedia('(max-width: 760px)').matches) {
+    const r = owner.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > window.innerHeight) close(); else place();
+  } }, { passive: true });
 })();
 
 // ---------- 自动消失的提示气泡（24 小时无新内容警告等） ----------

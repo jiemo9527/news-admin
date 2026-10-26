@@ -58,6 +58,7 @@
         <input type="hidden" name="value" value="{{ '0' if item.favorite else '1' }}">
         <button class="tool tool-fav" type="submit" aria-pressed="{{ 'true' if item.favorite else 'false' }}">{{ '已收藏' if item.favorite else '收藏' }}</button>
       </form>
+      {% if analysis_enabled %}<button class="tool tool-analyze" type="button" data-analyze aria-haspopup="dialog" title="用 {{ analysis_model }} 联网检索相关信息与最新进展">分析</button>{% endif %}
     </div>
     {% set context = event.previous | selectattr('relation', 'equalto', 'follow_up') | list %}
     {% if context %}

@@ -635,6 +635,13 @@ class Store:
         return bool(canonical_id) and bool(self._rows(
             "SELECT 1 FROM events e JOIN runs r ON r.id=e.run_id WHERE e.canonical_id=? AND r.status='completed' LIMIT 1", (canonical_id,)))
 
+    def latest_event(self, canonical_id: str) -> tuple[int, Event] | None:
+        """某个 canonical 事件在已完成运行中的最新版本。"""
+        rows = self._rows(
+            "SELECT e.run_id, e.payload_json FROM events e JOIN runs r ON r.id=e.run_id "
+            "WHERE e.canonical_id=? AND r.status='completed' ORDER BY e.run_id DESC LIMIT 1", (canonical_id,))
+        return (int(rows[0]['run_id']), Event.model_validate_json(rows[0]['payload_json'])) if canonical_id and rows else None
+
     def set_read(self, user_id: int, canonical_ids, value: bool = True) -> int:
         ids = [c for c in dict.fromkeys(canonical_ids) if c]
         with self._conn() as conn:

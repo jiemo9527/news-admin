@@ -31,6 +31,7 @@ from .auth import ROLES, generate_password, generate_username, hash_password, va
 from .config import Settings, update_env_file
 from .digest import article_times, build_sections, event_region_label
 from .fetch import SOURCE_KINDS
+from .insight import ANALYSIS_MODEL, InsightError, InsightService
 from .models import CONTENT_TYPE_LABELS, REGION_LABELS, TOPIC_LABELS, Topic
 from .pipeline import PipelineBusy
 from .push import CHANNEL_KINDS
@@ -44,6 +45,7 @@ BASE = Path(__file__).resolve().parent
 PUBLIC_PATHS = ('/login', '/healthz', '/favicon.ico')
 PUBLIC_PREFIXES = ('/static/',)
 PER_PAGE = 20
+PER_PAGE_CHOICES = (10, 20, 50)
 STALE_AFTER = timedelta(hours=24)
 SESSION_MAX_AGE = 10 * 365 * 86400
 SECRET_CHANNEL_FIELDS = ('bot_token', 'webhook', 'secret', 'password')
@@ -244,8 +246,14 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         user = getattr(request.state, 'user', None)
         return templates.TemplateResponse(request, name, {
             'rt': rt, 'user': user, 'admin': bool(user and user['role'] == 'admin'), 'signed_in': user is not None,
-            'path': request.url.path, 'stale_warning': stale_warning() if user and name == 'feed.html' else '', **context,
+            'path': request.url.path, 'stale_warning': stale_warning() if user and name == 'feed.html' else '',
+            'analysis_enabled': analysis_enabled(), 'analysis_model': ANALYSIS_MODEL, **context,
         })
+
+    insights = InsightService()
+
+    def analysis_enabled() -> bool:
+        return rt.store.get_setting('analysis_enabled', '1') == '1'
 
     def stale_warning() -> str:
         """最近 24 小时没有任何新内容入库时提示（只在首页显示，5 秒后消失）。"""
@@ -288,13 +296,21 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         uid = request.state.user['id']
         raw = request.query_params.get('page', '1')
         current = int(raw) if raw.isdigit() and int(raw) > 0 else 1
+        # 每页条数：显式选择时记入会话，之后刷新/返回首页沿用
+        raw_per = request.query_params.get('per', '')
+        if raw_per.isdigit() and int(raw_per) in PER_PAGE_CHOICES:
+            per = int(raw_per)
+            request.session['per'] = per
+        else:
+            saved = request.session.get('per')
+            per = saved if saved in PER_PAGE_CHOICES else PER_PAGE
         # 先固定快照（最新运行 + 当前时间），渲染与长按「至此已读」都基于它
         latest = rt.store.latest_completed_run()
         max_run = latest['id'] if latest else 0
         now = tz.now()
 
         def load(page_no: int):
-            return rt.store.feed(range_=range_, q=q, page=page_no, per_page=PER_PAGE, sort=sort, topic=topic, source=source,
+            return rt.store.feed(range_=range_, q=q, page=page_no, per_page=per, sort=sort, topic=topic, source=source,
                                  user_id=uid, unread=only_unread, max_run=max_run, now=now)
 
         feed = load(current)
@@ -302,16 +318,18 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             feed = load(feed.pages)
         for item in feed.items:
             ensure_rating(item.event, now)
-        defaults = {'q': '', 'range': 'all', 'sort': 'time', 'topic': '', 'source': '', 'unread': '', 'page': 1}
+        defaults = {'q': '', 'range': 'all', 'sort': 'time', 'topic': '', 'source': '', 'unread': '', 'page': 1, 'per': PER_PAGE}
 
         def url(**override: Any) -> str:
             merged = {'q': q, 'range': range_, 'sort': sort, 'topic': topic, 'source': source, 'unread': '1' if only_unread else '',
-                      'page': 1, **override}
-            query = {k: v for k, v in merged.items() if v != defaults[k]}
+                      'page': 1, 'per': per, **override}
+            # 明确切换每页条数时总带上 per，才能覆盖会话里记住的值
+            query = {k: v for k, v in merged.items() if v != defaults[k] or (k == 'per' and 'per' in override)}
             return '/' + ('?' + urlencode(query) if query else '')
 
         return page(
             request, 'feed.html', feed=feed, q=q, range_=range_, sort=sort, topic=topic, source=source, url=url, unread=only_unread,
+            per=per, per_choices=PER_PAGE_CHOICES,
             topic_counts=rt.store.topic_counts(range_=range_, q=q, source=source, user_id=uid, unread=only_unread, now=now),
             source_counts=rt.store.source_counts(range_=range_, q=q, topic=topic, user_id=uid, unread=only_unread, now=now), latest=latest,
             history=rt.store.search_history(uid), max_run=max_run, snapshot_at=tz.iso(now),
@@ -393,6 +411,21 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     @app.post('/me/search-history/remove')
     def remove_search(request: Request, q: str = Form('')):
         return personal_result(request, {'items': rt.store.remove_search_history(request.state.user['id'], q)})
+
+    @app.post('/me/analyze')
+    def analyze_event(request: Request, canonical: str = Form(...)):
+        """按需分析（gpt-5.6-luna 联网检索）。只读用户也可用；后台可整体关闭。"""
+        if not analysis_enabled():
+            raise HTTPException(403, '文章分析已在后台关闭')
+        found = rt.store.latest_event(canonical)
+        if found is None:
+            raise HTTPException(404, '新闻不存在或已过期')
+        run_id, event = found
+        try:
+            return insights.analyze(rt, request.state.user['id'], run_id, canonical, event)
+        except InsightError as exc:
+            logging.getLogger(__name__).warning('analysis failed for %s: %s', canonical, exc)
+            raise HTTPException(exc.status, str(exc))
 
     @app.get('/favicon.ico', include_in_schema=False)
     def favicon():
@@ -768,6 +801,12 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         rt.store.set_setting('retention_days', retention_days)
         flash(request, '设置已保存，下次运行生效', 'success')
         return RedirectResponse('/admin/settings', status_code=303)
+
+    @app.post('/admin/settings/analysis')
+    def save_analysis(request: Request, enabled: str = Form('0')):
+        rt.store.set_setting('analysis_enabled', '1' if enabled == '1' else '0')
+        flash(request, '文章分析已' + ('开启' if enabled == '1' else '关闭'), 'success')
+        return RedirectResponse('/admin/settings#analysis', status_code=303)
 
     @app.post('/admin/settings/models')
     async def save_models(request: Request):

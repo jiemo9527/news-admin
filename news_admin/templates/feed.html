@@ -1,5 +1,26 @@
 {% extends 'base.html' %}
-{% from '_macros.html' import feed_card %}
+{% from '_macros.html' import feed_card with context %}
+{% macro pager(position) -%}
+{% if feed.total > per_choices[0] %}
+<nav class="pager{% if position == 'top' %} pager-top{% endif %}" aria-label="{{ '分页（顶部）' if position == 'top' else '分页' }}">
+  {% if feed.pages > 1 %}
+  {% if feed.page > 1 %}<a class="pager-step" href="{{ url(page=feed.page - 1) }}" data-live-link rel="prev">上一页</a>{% else %}<span class="pager-step disabled">上一页</span>{% endif %}
+  <span class="pager-pages">
+  {% set ns = namespace(last=0) %}
+  {% for n in range(1, feed.pages + 1) %}
+    {% if n == 1 or n == feed.pages or (n - feed.page) | abs <= 1 %}
+      {% if ns.last and n - ns.last > 1 %}<span class="pager-gap">…</span>{% endif %}
+      <a href="{{ url(page=n) }}" data-live-link {% if n == feed.page %}aria-current="page"{% endif %}>{{ n }}</a>
+      {% set ns.last = n %}
+    {% endif %}
+  {% endfor %}
+  </span>
+  {% if feed.page < feed.pages %}<a class="pager-step" href="{{ url(page=feed.page + 1) }}" data-live-link rel="next">下一页</a>{% else %}<span class="pager-step disabled">下一页</span>{% endif %}
+  {% endif %}
+  <span class="per-page" role="group" aria-label="每页条数"><span class="per-page-label">每页</span>{% for n in per_choices %}<a href="{{ url(per=n) }}" data-live-link {% if n == per %}aria-current="true"{% endif %}>{{ n }}</a>{% endfor %}</span>
+</nav>
+{% endif %}
+{%- endmacro %}
 {% block title %}{% if q %}{{ q }} - {% endif %}新闻汇总{% endblock %}
 {% block content %}
 <section class="feed-head">
@@ -22,6 +43,7 @@
     <input type="hidden" name="sort" value="{{ sort }}">
     <input type="hidden" name="topic" value="{{ topic }}">
     <input type="hidden" name="unread" value="{{ '1' if unread else '' }}">
+    <input type="hidden" name="per" value="{{ per }}">
     <noscript><button type="submit" class="btn btn-primary">搜索</button></noscript>
   </div>
   <div class="search-history" data-search-history {% if not history %}hidden{% endif %}>
@@ -64,6 +86,7 @@
   {% if q or source or topic or unread or range_ != 'all' %}<a class="reset-link" href="/">清除筛选</a>{% endif %}
   <span class="muted upto-hint">长按某条可将其及以上标为已读</span>
 </p>
+{{ pager('top') }}
 
 {% if feed.items %}
 {% set timeline = sort == 'time' and range_ in ('today', '3d', '7d') %}
@@ -90,22 +113,7 @@
 </div>
 {% endif %}
 
-{% if feed.pages > 1 %}
-<nav class="pager" aria-label="分页">
-  {% if feed.page > 1 %}<a class="pager-step" href="{{ url(page=feed.page - 1) }}" data-live-link rel="prev">上一页</a>{% else %}<span class="pager-step disabled">上一页</span>{% endif %}
-  <span class="pager-pages">
-  {% set ns = namespace(last=0) %}
-  {% for n in range(1, feed.pages + 1) %}
-    {% if n == 1 or n == feed.pages or (n - feed.page) | abs <= 1 %}
-      {% if ns.last and n - ns.last > 1 %}<span class="pager-gap">…</span>{% endif %}
-      <a href="{{ url(page=n) }}" data-live-link {% if n == feed.page %}aria-current="page"{% endif %}>{{ n }}</a>
-      {% set ns.last = n %}
-    {% endif %}
-  {% endfor %}
-  </span>
-  {% if feed.page < feed.pages %}<a class="pager-step" href="{{ url(page=feed.page + 1) }}" data-live-link rel="next">下一页</a>{% else %}<span class="pager-step disabled">下一页</span>{% endif %}
-</nav>
-{% endif %}
+{{ pager('bottom') }}
 </div>
-<script src="/static/app.js?v=6" defer></script>
+<script src="/static/app.js?v=7" defer></script>
 {% endblock %}

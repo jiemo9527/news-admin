@@ -80,4 +80,16 @@
   </dl>
   {% endif %}
 </section>
+<section class="panel" id="analysis">
+  <h2>文章分析</h2>
+  <p class="hint">新闻卡片上的「分析」按钮：点击后调用 <code>{{ analysis_model }}</code> 联网检索相关信息和最新进展，结果以浮层显示。只在点击时调用，不影响抓取和推送；同一新闻 6 小时内复用结果，每个账号每小时最多 20 次。</p>
+  {% if admin %}
+  <form method="post" action="/admin/settings/analysis" class="form-inline">
+    <label class="switch"><input type="checkbox" name="enabled" value="1" {% if analysis_enabled %}checked{% endif %}><span>显示「分析」按钮</span></label>
+    <button class="btn btn-primary">保存</button>
+  </form>
+  {% else %}
+  <dl class="kv"><dt>状态</dt><dd>{{ '已开启' if analysis_enabled else '已关闭' }}</dd></dl>
+  {% endif %}
+</section>
 {% endblock %}

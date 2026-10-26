@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% from '_macros.html' import feed_card %}
+{% from '_macros.html' import feed_card with context %}
 {% block title %}我的收藏{% endblock %}
 {% block content %}
 <section class="feed-head">
@@ -19,5 +19,5 @@
   <a class="btn" href="/">去看新闻</a>
 </div>
 {% endif %}
-<script src="/static/app.js?v=5" defer></script>
+<script src="/static/app.js?v=7" defer></script>
 {% endblock %}

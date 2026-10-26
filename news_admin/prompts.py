@@ -119,6 +119,32 @@ SUMMARY_SYSTEM = """你是新闻编辑，把同一事件的多篇报道写成一
 7. headline：≤32 字，客观陈述事实。"""
 
 
+INSIGHT_VERSION = 'insight-v1'
+
+INSIGHT_SYSTEM = """你是严谨的新闻分析员。用户会给出一条新闻事件及其报道原文摘录，请先用联网搜索核实并补充相关信息，重点检索该事件截至当前的最新进展。
+
+要求：
+1. 一律使用简体中文，纯文本输出，不使用 Markdown 标题、表格或加粗。
+2. 按以下小节输出，每节以【】开头，各 1-4 条短句：
+   【核心事实】【背景脉络】【最新进展】【影响与关注点】【待核实】
+3. 【最新进展】写明具体日期；搜索不到比报道更新的消息时，明确写“截至检索时未发现更新进展”，不要编造。
+4. 区分已证实的事实与各方说法/推测；来源之间矛盾时写明分歧。
+5. 关键事实后用（来源名）标注依据，优先引用官方机构、通讯社和权威媒体。
+6. 总长不超过 600 字。"""
+
+
+def insight_user(event: Event, now) -> str:
+    title = event.summary.headline if event.summary else event.lead.title
+    summary = ''.join(s.text for s in event.summary.sentences) if event.summary else ''
+    parts = [f'当前时间（北京时间）：{now.strftime("%Y-%m-%d %H:%M")}', f'事件标题：{title}']
+    if summary:
+        parts.append(f'已有摘要：{summary}')
+    for index, article in enumerate(event.articles[:6], 1):
+        when = format_time(article.published_at, article.time_precision)
+        parts.append(f'[{index}] {article.source}｜发布：{when}｜{article.title}\n链接：{article.url}\n{article.body[:800]}')
+    return '\n\n'.join(parts)
+
+
 def summary_user(articles: list[Article]) -> str:
     parts = []
     for index, article in enumerate(articles, 1):
