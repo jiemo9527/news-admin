@@ -440,8 +440,9 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         snapshot = rt.store.get_push_brief(key)
         if snapshot is None:
             raise HTTPException(404)
+        canonical = rt.store.canonical_ids_upto(snapshot['run_id'], [e.id for e in snapshot['events']])
         return page(request, 'brief.html', run={'id': snapshot['run_id'], 'finished_at': snapshot['created_at']},
-                    sections=build_sections(snapshot['events']), push_snapshot=True, push_key=key)
+                    sections=build_sections(snapshot['events']), push_snapshot=True, push_key=key, canonical_ids=canonical)
 
     @app.get('/briefs/{run_id}', response_class=HTMLResponse)
     def brief(request: Request, run_id: int):
@@ -453,7 +454,8 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         finished = tz.parse(run.get('finished_at')) or tz.now()
         for event in events:
             ensure_rating(event, finished)
-        return page(request, 'brief.html', run=run, sections=build_sections(events))
+        canonical = rt.store.canonical_ids(run_id, [e.id for e in events])
+        return page(request, 'brief.html', run=run, sections=build_sections(events), canonical_ids=canonical)
 
     @app.get('/thumb/{key}')
     def thumb(key: str):

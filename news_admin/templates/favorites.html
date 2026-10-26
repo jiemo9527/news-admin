@@ -19,5 +19,6 @@
   <a class="btn" href="/">去看新闻</a>
 </div>
 {% endif %}
-<script src="/static/app.js?v=7" defer></script>
+<script src="/static/app.js?v=8" defer></script>
+{% if analysis_enabled %}<script src="/static/insight.js?v=1" defer></script>{% endif %}
 {% endblock %}

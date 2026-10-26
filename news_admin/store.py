@@ -676,7 +676,7 @@ class Store:
         return self.set_read(user_id, ids)
 
     def mark_events_read(self, user_id: int, run_id: int, event_ids: list[str]) -> int:
-        return self.set_read(user_id, self.canonical_ids(run_id, event_ids).values())
+        return self.set_read(user_id, self.canonical_ids_upto(run_id, event_ids).values())
 
     def favorites(self, user_id: int, now: datetime | None = None) -> list[FeedItem]:
         """收藏列表：按收藏时间倒序，每个事件显示最新版本。"""
@@ -829,6 +829,13 @@ class Store:
     def canonical_ids(self, run_id: int, event_ids: list[str]) -> dict[str, str]:
         marks = ','.join('?' * len(event_ids))
         rows = self._rows(f'SELECT id, canonical_id FROM events WHERE run_id=? AND id IN ({marks})', (run_id, *event_ids)) if event_ids else []
+        return {r['id']: r['canonical_id'] for r in rows}
+
+    def canonical_ids_upto(self, run_id: int, event_ids: list[str]) -> dict[str, str]:
+        """跨期汇总快照里的事件可能来自更早的运行：取不晚于快照所属运行的最新一版。"""
+        marks = ','.join('?' * len(event_ids))
+        rows = self._rows(f"SELECT id, canonical_id FROM events WHERE run_id<=? AND id IN ({marks}) AND canonical_id!='' "
+                          'ORDER BY run_id', (run_id, *event_ids)) if event_ids else []
         return {r['id']: r['canonical_id'] for r in rows}
 
     def mark_pushed(self, channel_id: int, canonical_ids) -> None:

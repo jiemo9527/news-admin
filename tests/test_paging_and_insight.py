@@ -134,3 +134,28 @@ def test_analysis_limits_requests_per_user(tmp_path, monkeypatch):
     assert client.post('/me/analyze', data={'canonical': canonical(rt, 'e0')}, headers=FETCH).status_code == 200
     limited = client.post('/me/analyze', data={'canonical': canonical(rt, 'e1')}, headers=FETCH)
     assert limited.status_code == 429 and '稍后' in limited.json()['detail']
+
+
+def test_brief_pages_offer_analysis_including_cross_run_push_snapshots(tmp_path):
+    rt, client = make_client(tmp_path)
+    first = save(rt.store, [ev('a', '简报新闻A', tz.now() - timedelta(hours=2))])
+    second = save(rt.store, [ev('b', '简报新闻B', tz.now() - timedelta(hours=1))])
+    rt.transport = httpx.MockTransport(lambda r: httpx.Response(200, json=luna_response('【核心事实】x')))
+    soup = BeautifulSoup(client.get(f'/briefs/{second}').text, 'html.parser')
+    card = soup.select_one('#e-b')
+    assert card['data-canonical'] == canonical(rt, 'b') and card.select_one('button[data-analyze]') is not None
+    assert soup.select_one('script[src^="/static/insight.js"]') is not None
+    # 跨期汇总快照：较早一期的事件也要能分析
+    key = rt.store.save_push_brief(second, rt.store.load_events(first) + rt.store.load_events(second))
+    soup = BeautifulSoup(client.get(f'/briefs/push/{key}').text, 'html.parser')
+    ids = {c['id']: c.get('data-canonical') for c in soup.select('.news-card')}
+    assert ids == {'e-a': canonical(rt, 'a'), 'e-b': canonical(rt, 'b')}
+    assert len(soup.select('button[data-analyze]')) == 2
+    assert client.post('/me/analyze', data={'canonical': ids['e-a']}, headers=FETCH).status_code == 200
+    # 跨期快照的「全部标为已读」同样覆盖较早一期的事件
+    assert client.post(f'/me/read/push/{key}', headers=FETCH).json()['count'] == 2
+
+    rt.store.set_setting('analysis_enabled', '0')
+    for path in (f'/briefs/{second}', f'/briefs/push/{key}'):
+        html = client.get(path).text
+        assert 'data-analyze' not in html and '/static/insight.js' not in html

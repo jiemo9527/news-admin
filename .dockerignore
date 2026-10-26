@@ -1,4 +1,4 @@
-# 严格白名单：本地 agent.md、密钥、数据、日志、Git 历史均不进入构建上下文。
+# 严格白名单：本地 AGENTS.md/agent.local.md、密钥、数据、日志、Git 历史均不进入构建上下文。
 **
 !Dockerfile
 !requirements.lock

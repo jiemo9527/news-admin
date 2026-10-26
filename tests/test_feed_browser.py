@@ -153,3 +153,68 @@ def test_per_page_switch_and_analysis_popover(tmp_path, chrome, width, height):
     finally:
         page.close()
         client.close()
+
+
+@pytest.mark.parametrize('width,height', [(1366, 768), (390, 844)])
+def test_brief_analysis_keeps_running_after_popover_is_closed(tmp_path, chrome, width, height):
+    import httpx
+    rt, client = make_client(tmp_path)
+    now = tz.now()
+    run = save(rt.store, [ev(f'b{i}', f'简报测试新闻{i}', now - timedelta(minutes=i)) for i in range(3)])
+    calls = []
+
+    def luna(request):
+        calls.append(request)
+        return httpx.Response(200, json={'output': [
+            {'type': 'web_search_call', 'status': 'completed'},
+            {'type': 'message', 'content': [{'type': 'output_text', 'text': '【核心事实】后台完成的分析。', 'annotations': []}]}]})
+
+    rt.transport = httpx.MockTransport(luna)
+    page = chrome.new_page(viewport={'width': width, 'height': height})
+    errors = []
+    page.on('pageerror', lambda error: errors.append(str(error)))
+    # 同步 Playwright 的 route 处理会阻塞事件循环：在页面里挡住分析请求，直到测试放行
+    page.add_init_script("""(() => {
+        const real = window.fetch; window.__release = null;
+        const gate = new Promise((resolve) => { window.__release = resolve; });
+        window.fetch = (url, opts) => String(url).includes('/me/analyze') ? gate.then(() => real(url, opts)) : real(url, opts);
+    })()""")
+
+    def serve(route):
+        url = urlsplit(route.request.url)
+        target = url.path + (f'?{url.query}' if url.query else '')
+        if route.request.method == 'POST':
+            response = client.post(target, content=route.request.post_data_buffer,
+                                   headers={k: v for k, v in route.request.headers.items() if k.lower() in ('content-type', 'x-requested-with')})
+        else:
+            response = client.get(target)
+        route.fulfill(status=response.status_code, body=response.content,
+                      content_type=response.headers.get('content-type', 'text/html'))
+
+    page.route('http://testserver/**', serve)
+    try:
+        page.goto(f'http://testserver/briefs/{run}')
+        button = page.locator('#e-b0 [data-analyze]')
+        button.click()
+        page.wait_for_selector('.insight-pop .insight-loading')
+        assert '后台' in page.locator('.insight-pop').inner_text()
+        page.locator('.insight-close').click()
+        assert page.locator('.insight-pop').count() == 0
+        page.wait_for_function("() => document.querySelector('#e-b0 [data-analyze]').textContent === '分析中…'")
+        page.evaluate('window.__release()')
+        # 浮层已关闭：请求仍完成，按钮变为「查看分析」并弹出提示
+        page.wait_for_function("() => document.querySelector('#e-b0 [data-analyze]').textContent === '查看分析'", timeout=8000)
+        toast = page.locator('.toast-insight')
+        assert '分析完成' in toast.inner_text()
+        box = toast.bounding_box()
+        assert box['x'] >= 0 and box['x'] + box['width'] <= width + 1
+        toast.locator('.toast-action').click()
+        page.wait_for_selector('.insight-pop .insight-section h3')
+        assert '后台完成的分析' in page.locator('.insight-pop').inner_text()
+        page.keyboard.press('Escape')
+        button.click()  # 再次打开直接显示结果，不再请求
+        page.wait_for_selector('.insight-pop .insight-section h3')
+        assert len(calls) == 1 and not errors
+    finally:
+        page.close()
+        client.close()

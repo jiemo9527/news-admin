@@ -22,7 +22,8 @@
   {% for event in section.events %}
   {% set s = event.summary %}
   {% set r = event.rating %}
-  <article id="e-{{ event.id }}" class="event news-card{% if event.thumbnail %} has-thumb{% endif %}">
+  {% set cid = canonical_ids.get(event.id, '') %}
+  <article id="e-{{ event.id }}" class="event news-card{% if event.thumbnail %} has-thumb{% endif %}"{% if cid %} data-canonical="{{ cid }}"{% endif %}>
     <div class="news-main event-body">
       <div class="news-kicker">
         {{ grade_badge(r) }}
@@ -41,6 +42,11 @@
         {{ event_times(event) }}
         <span>{{ event.sources | length }} 个来源</span>
       </div>
+      {% if analysis_enabled and cid %}
+      <div class="card-tools">
+        <button class="tool tool-analyze" type="button" data-analyze aria-haspopup="dialog" title="用 {{ analysis_model }} 联网检索相关信息与最新进展">分析</button>
+      </div>
+      {% endif %}
       {% set context = event.previous | selectattr('relation', 'equalto', 'follow_up') | list %}
       {% if context %}
       <div class="previous">
@@ -75,4 +81,5 @@
 </section>
 {% endfor %}
 <script src="/static/brief.js?v=1" defer></script>
+{% if analysis_enabled %}<script src="/static/insight.js?v=1" defer></script>{% endif %}
 {% endblock %}
