@@ -36,6 +36,7 @@ from .models import CONTENT_TYPE_LABELS, REGION_LABELS, TOPIC_LABELS, Topic
 from .pipeline import PipelineBusy
 from .push import CHANNEL_KINDS
 from .rank import GRADE_LABELS, rate_event
+from .rss import RSS_LIMIT, TOKEN_PATTERN, TOKEN_SETTING, new_token, render_rss, rss_path
 from .runtime import Runtime, build_runtime
 from .sources import EXTRA_SOURCES, ORIGINAL_SOURCES
 from .store import FEED_RANGES, FEED_SORTS
@@ -44,6 +45,7 @@ from .timefmt import created_updated, format_time
 BASE = Path(__file__).resolve().parent
 PUBLIC_PATHS = ('/login', '/healthz', '/favicon.ico')
 PUBLIC_PREFIXES = ('/static/',)
+RSS_PUBLIC = re.compile(r'/rss/[A-Za-z0-9_-]+/rss\.xml')  # 免登录，由路径中的随机令牌鉴权
 PER_PAGE = 20
 PER_PAGE_CHOICES = (10, 20, 50)
 STALE_AFTER = timedelta(hours=24)
@@ -223,7 +225,7 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
     @app.middleware('http')
     async def require_login(request: Request, call_next):
         path = request.url.path
-        if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES) or (request.method == 'GET' and RSS_PUBLIC.fullmatch(path)):
             return await call_next(request)
         user = current_user(request)
         if user is None:
@@ -426,6 +428,22 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
         except InsightError as exc:
             logging.getLogger(__name__).warning('analysis failed for %s: %s', canonical, exc)
             raise HTTPException(exc.status, str(exc))
+
+    # ---------- RSS：免登录，凭路径中的随机令牌访问；未开启或令牌不符一律 404 ----------
+    def site_url(request: Request) -> str:
+        return rt.settings.public_base_url.rstrip('/') or str(request.base_url).rstrip('/')
+
+    @app.get('/rss/{token}/rss.xml', include_in_schema=False)
+    def rss_feed(request: Request, token: str):
+        expected = rt.store.get_setting(TOKEN_SETTING)
+        if not expected or not TOKEN_PATTERN.match(token) or not hmac.compare_digest(token, expected):
+            raise HTTPException(404)
+        now = tz.now()
+        items = rt.store.feed(page=1, per_page=RSS_LIMIT, sort='time', now=now).items
+        for item in items:
+            ensure_rating(item.event, now)
+        return Response(render_rss(items, site_url(request) + '/', now=now), media_type='application/rss+xml; charset=utf-8',
+                        headers={'Cache-Control': 'no-cache', 'X-Robots-Tag': 'noindex'})
 
     @app.get('/favicon.ico', include_in_schema=False)
     def favicon():
@@ -792,7 +810,21 @@ def create_app(runtime: Runtime | None = None, start_scheduler: bool = True) -> 
             fetch_window=rt.store.get_setting('fetch_window', settings.fetch_window),
             retention_days=rt.store.get_setting('retention_days', str(settings.retention_days)),
             s=rt.settings, test_results=request.session.pop('conn_test', {}),
+            rss_url=(site_url(request) + rss_path(token)) if (token := rt.store.get_setting(TOKEN_SETTING)) else '', rss_limit=RSS_LIMIT,
         )
+
+    @app.post('/admin/settings/rss')
+    def save_rss(request: Request, action: str = Form(...)):
+        """生成 / 重置（旧地址立即失效）/ 关闭 RSS 订阅地址。"""
+        if action in ('enable', 'reset'):
+            rt.store.set_setting(TOKEN_SETTING, new_token())
+            flash(request, 'RSS 订阅地址已' + ('生成' if action == 'enable' else '重置，旧地址已失效'), 'success')
+        elif action == 'disable':
+            rt.store.set_setting(TOKEN_SETTING, '')
+            flash(request, 'RSS 订阅已关闭，原地址失效', 'success')
+        else:
+            raise HTTPException(400)
+        return RedirectResponse('/admin/settings#rss', status_code=303)
 
     @app.post('/admin/settings')
     def save_settings(request: Request, fetch_window: str = Form(...), retention_days: str = Form(...)):

@@ -37,6 +37,26 @@
     {% endif %}
   </section>
 </div>
+<section class="panel" id="rss">
+  <h2>RSS 订阅</h2>
+  <p class="hint">输出首页最新 {{ rss_limit }} 条新闻（同一事件只保留最新版本），条目链接指向原文。订阅地址含随机令牌、无需登录，请勿公开；重置后旧地址立即失效。</p>
+  {% if admin %}
+  {% if rss_url %}
+  <div class="form-inline">
+    <label class="field grow"><span>订阅地址</span><input id="rss-url" value="{{ rss_url }}" readonly spellcheck="false"></label>
+    <button type="button" class="btn" data-copy-input="#rss-url">复制</button>
+  </div>
+  <div class="form-actions">
+    <form method="post" action="/admin/settings/rss" data-confirm="重置后旧订阅地址立即失效，确定重置？"><input type="hidden" name="action" value="reset"><button class="btn">重置地址</button></form>
+    <form method="post" action="/admin/settings/rss" data-confirm="关闭后订阅地址立即失效，确定关闭？"><input type="hidden" name="action" value="disable"><button class="btn btn-danger">关闭订阅</button></form>
+  </div>
+  {% else %}
+  <form method="post" action="/admin/settings/rss" class="form-inline"><input type="hidden" name="action" value="enable"><button class="btn btn-primary">生成订阅地址</button></form>
+  {% endif %}
+  {% else %}
+  <dl class="kv"><dt>状态</dt><dd>{{ '已开启（地址仅管理员可见）' if rss_url else '未开启' }}</dd></dl>
+  {% endif %}
+</section>
 <section class="panel" id="models">
   <h2>模型与向量</h2>
   {% for key, label in [('llm', '大模型'), ('embedding', '向量模型')] if test_results.get(key) %}
@@ -92,4 +112,5 @@
   <dl class="kv"><dt>状态</dt><dd>{{ '已开启' if analysis_enabled else '已关闭' }}</dd></dl>
   {% endif %}
 </section>
+<script src="/static/settings.js?v=1" defer></script>
 {% endblock %}
